@@ -38,7 +38,6 @@ final class RelayButton: NSButton {
     private func applyStyle() {
         isBordered = style != .plain && style != .tab
         bezelStyle = .rounded
-        if #available(macOS 26.0, *) { borderShape = .capsule }
         bezelColor = style == .primary ? accent : nil
         contentTintColor = style == .primary ? .white : .labelColor
         updateTitleInk()
@@ -74,7 +73,6 @@ final class RelaySegments: NSSegmentedControl {
     init(labels: [String], trackingMode: NSSegmentedControl.SwitchTracking, target: AnyObject?, action: Selector?) {
         super.init(frame: .zero); segmentCount = labels.count; self.trackingMode = trackingMode; self.target = target; self.action = action
         font = .systemFont(ofSize: 12); controlSize = .large; segmentStyle = .rounded; selectedSegmentBezelColor = accent
-        if #available(macOS 26.0, *) { borderShape = .capsule }
         for (index, label) in labels.enumerated() { setLabel(label, forSegment: index); setWidth(ceil((label as NSString).size(withAttributes: [.font: font!]).width) + 24, forSegment: index) }
         selectedSegment = 0
         setContentHuggingPriority(.required, for: .horizontal); setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -98,7 +96,6 @@ final class RelayPopup: NSPopUpButton {
         super.init(frame: frame, pullsDown: pullsDown)
         cell = FlatPopupCell(textCell: "", pullsDown: pullsDown)
         font = .systemFont(ofSize: 12); controlSize = .small; isBordered = true; bezelStyle = .rounded
-        if #available(macOS 26.0, *) { borderShape = .capsule }
         chrome = ControlChrome(self)
     }
     convenience init() { self.init(frame: .zero, pullsDown: false) }
