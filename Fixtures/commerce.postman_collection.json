@@ -1,0 +1,102 @@
+{
+  "info" : {
+    "name" : "Commerce API",
+    "schema" : "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item" : [
+    {
+      "item" : [
+        {
+          "name" : "List products",
+          "request" : {
+            "body" : {
+              "mode" : "raw",
+              "raw" : ""
+            },
+            "header" : [
+              {
+                "disabled" : false,
+                "key" : "Accept",
+                "value" : "application/json"
+              }
+            ],
+            "method" : "GET",
+            "url" : {
+              "query" : [
+                {
+                  "disabled" : false,
+                  "key" : "limit",
+                  "value" : "50"
+                }
+              ],
+              "raw" : "{{base_url}}/products?limit=50"
+            }
+          }
+        },
+        {
+          "name" : "Get product",
+          "request" : {
+            "body" : {
+              "mode" : "raw",
+              "raw" : ""
+            },
+            "header" : [
+
+            ],
+            "method" : "GET",
+            "url" : {
+              "query" : [
+
+              ],
+              "raw" : "{{base_url}}/products/1"
+            }
+          }
+        },
+        {
+          "name" : "Create product",
+          "request" : {
+            "body" : {
+              "mode" : "raw",
+              "options" : {
+                "raw" : {
+                  "language" : "json"
+                }
+              },
+              "raw" : "{\n  \"name\": \"Studio headphones\",\n  \"price\": 129.00\n}"
+            },
+            "header" : [
+
+            ],
+            "method" : "POST",
+            "url" : {
+              "query" : [
+
+              ],
+              "raw" : "{{base_url}}/products"
+            }
+          }
+        },
+        {
+          "name" : "Large JSON · 100 MB",
+          "request" : {
+            "body" : {
+              "mode" : "raw",
+              "raw" : ""
+            },
+            "header" : [
+
+            ],
+            "method" : "GET",
+            "url" : {
+              "query" : [
+
+              ],
+              "raw" : "{{base_url}}/large"
+            }
+          }
+        }
+      ],
+      "name" : "Products"
+    }
+  ]
+}
