@@ -1,0 +1,37 @@
+name: Release Postino
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: Release name shown on GitHub
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build Postino
+        run: ./scripts/build.sh
+
+      - name: Package app
+        run: ditto -c -k --sequesterRsrc --keepParent build/Release/Postino.app "Postino-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NAME: ${{ inputs.release_name }}
+        run: |
+          tag="postino-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          archive="Postino-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+          gh release create "$tag" "$archive" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_NAME" \
+            --generate-notes

@@ -7,6 +7,12 @@ struct FindChecks {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.regular)
         let controller = MainWindow(), window = controller.window!
+        func memory(_ phase: String) {
+            guard ProcessInfo.processInfo.environment["PROFILE_FIND"] == "1" else { return }
+            var usage = rusage(); getrusage(RUSAGE_SELF, &usage)
+            print("Peak RSS after \(phase): \(usage.ru_maxrss / 1_048_576) MiB"); fflush(stdout)
+        }
+        memory("window setup")
         func pump() { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02)) }
         func wait(_ message: String, _ check: () -> Bool) {
             let deadline = Date(timeIntervalSinceNow: 15)
@@ -30,6 +36,7 @@ struct FindChecks {
         defer { try? FileManager.default.removeItem(at: fixture) }
         let source = fixtureText as NSString
         let document = try ResponseSearchDocument(file: fixture)
+        memory("small file index")
         precondition(document.length == source.length && document.chunks.count > 2)
         for term in ["café", "📨", "CROSS-BOUNDARY", "TAIL-MARKER"] {
             let range = source.range(of: term)
@@ -66,6 +73,7 @@ struct FindChecks {
         precondition(controller.response.scroll.isFindBarVisible && controller.response.scroll.findBarView != nil, "Response displays the native Find bar")
         finder.performAction(.hideFindInterface); pump()
         precondition(!controller.response.scroll.isFindBarVisible)
+        memory("small native searches")
         let request = controller.body
         request.set("{\"message\":\"native café 📨\",\"other\":\"native\"}")
         window.makeFirstResponder(request.text)
@@ -94,6 +102,8 @@ struct FindChecks {
         let bytes = ResponseFile.size(large)
         precondition(bytes > 128_000_000)
         controller.current!.response = HTTPResult(file: large, status: 200, headers: [:], bytes: bytes, duration: 0.1, url: "http://localhost", contentType: "text/plain")
+        memory("128 MB fixture write")
+        client.ready = { memory("128 MB file index") }
         controller.renderResponse()
         finder.performAction(.showFindInterface); pump()
         let largeField = descendants(controller.response.scroll.findBarView!).compactMap { $0 as? NSTextField }.first { $0.isEditable }!
@@ -103,6 +113,7 @@ struct FindChecks {
         finder.performAction(.nextMatch)
         wait("Native Find reaches beyond 128 MB") { controller.response.text.selectedRange().length == 10 && controller.response.text.string.hasSuffix("LARGE-TAIL") }
         precondition(controller.response.text.string.utf8.count <= capacity && client.document!.chunks.count < 300, "Large response text and index remain bounded")
+        memory("128 MB native search")
         reader.clear()
         precondition(client.document == nil && client.stringLength() == 0, "Tab and file switches invalidate the old search document")
         print("Passed native Find bars, full-file next/previous and wraparound, cross-chunk matches, Unicode mapping, bounded display, read-only response validation, native request replacement, and 128 MB incremental search")

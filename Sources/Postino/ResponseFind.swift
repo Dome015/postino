@@ -54,17 +54,19 @@ final class ResponseSearchDocument {
         // The open descriptor remains valid if an old response is unlinked while
         // AppKit finishes a cancelled search. Response files are immutable.
         do {
-            try handle.seek(toOffset: chunk.bytes.lowerBound)
-            let data = try handle.read(upToCount: Int(chunk.bytes.count)) ?? Data()
-            let string = String(decoding: data, as: UTF8.self) as NSString
+            let string: NSString = try autoreleasepool {
+                try handle.seek(toOffset: chunk.bytes.lowerBound)
+                let data = try handle.read(upToCount: Int(chunk.bytes.count)) ?? Data()
+                return String(decoding: data, as: UTF8.self) as NSString
+            }
             cache.append((index, string)); if cache.count > 2 { cache.removeFirst() }
             return string
         } catch { return "" }
     }
-    func substring(at character: Int) -> (String, NSRange) {
+    func substring(at character: Int) -> (NSString, NSRange) {
         guard character >= 0, character < length, !chunks.isEmpty else { return ("", NSRange(location: length, length: 0)) }
         let index = chunkIndex(character: character)
-        return (text(index) as String, chunks[index].characters)
+        return (text(index), chunks[index].characters)
     }
     func byteOffset(at character: Int) -> UInt64 {
         guard !chunks.isEmpty else { return 0 }
@@ -140,8 +142,8 @@ final class ResponseFindClient: NSObject, NSTextFinderClient {
                     self.selectionChanged()
                     // A query entered while the index was being prepared must
                     // start searching the new document without another keypress.
-                    if self.editor?.scroll.isFindBarVisible == true { self.finder.performAction(.nextMatch) }
                     self.ready?()
+                    if self.editor?.scroll.isFindBarVisible == true { self.finder.performAction(.nextMatch) }
                 case .failure(let error): self.failed?("Could not prepare response search: \(error.localizedDescription)")
                 }
             }
@@ -151,11 +153,6 @@ final class ResponseFindClient: NSObject, NSTextFinderClient {
     var isEditable: Bool { false }
     var allowsMultipleSelection: Bool { false }
     func stringLength() -> Int { document?.length ?? 0 }
-    func string(at characterIndex: Int, effectiveRange outRange: NSRangePointer, endsWithSearchBoundary outFlag: UnsafeMutablePointer<ObjCBool>) -> String {
-        let value = document?.substring(at: characterIndex) ?? ("", NSRange(location: 0, length: 0))
-        outRange.pointee = value.1; outFlag.pointee = false
-        return value.0
-    }
     var firstSelectedRange: NSRange { selection.first?.rangeValue ?? NSRange(location: 0, length: 0) }
     var selectedRanges: [NSValue] {
         get { selection }
@@ -249,5 +246,10 @@ final class ResponseFindClient: NSObject, NSTextFinderClient {
             guard clipped.length > 0 else { continue }
             for rect in rects(forCharacterRange: clipped) ?? [] { NSTextFinder.drawIncrementalMatchHighlight(in: rect.rectValue) }
         }
+    }
+    func string(at characterIndex: Int, effectiveRange outRange: NSRangePointer, endsWithSearchBoundary outFlag: UnsafeMutablePointer<ObjCBool>) -> String {
+        let value = document?.substring(at: characterIndex) ?? ("", NSRange(location: 0, length: 0))
+        outRange.pointee = value.1; outFlag.pointee = false
+        return value.0 as String
     }
 }
