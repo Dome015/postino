@@ -13,13 +13,32 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Select pinned Apple toolchain
+        shell: zsh {0}
+        run: |
+          source scripts/toolchain-versions.sh
+          developer_dir="/Applications/Xcode_${POSTINO_XCODE_VERSION}.app/Contents/Developer"
+          if [[ ! -d "$developer_dir" ]]; then
+            print -u2 "Required Xcode $POSTINO_XCODE_VERSION is missing from this runner."
+            exit 1
+          fi
+          print "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+
       - name: Build Postino
         run: ./scripts/build.sh
+
+      - name: Check native controls and layout
+        run: ./scripts/test-ui.sh
+
+      - name: Verify release bundle
+        run: |
+          codesign --verify --deep --strict build/Release/Postino.app
+          cat build/Release/Postino.app/Contents/Resources/BuildInfo.json
 
       - name: Package app
         run: ditto -c -k --sequesterRsrc --keepParent build/Release/Postino.app "Postino-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
