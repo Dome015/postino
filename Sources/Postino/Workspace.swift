@@ -39,11 +39,18 @@ final class Workspace {
         // Responses are session-scoped; never grow the response cache across launches.
         try? FileManager.default.removeItem(at: responses); try? FileManager.default.createDirectory(at: responses, withIntermediateDirectories: true)
     }
-    func save(now: Bool = false) {
+    func save(now: Bool = false, completion: (() -> Void)? = nil) {
         pending?.cancel()
         let snapshot: JSON = ["collections": collections.map { $0.exported(internalIDs: true) }, "environments": environments.map(\.exported), "history": Array(history.prefix(100)), "selectedEnvironment": selectedEnvironment]
         let url = directory.appendingPathComponent("workspace.json")
-        let work = DispatchWorkItem { do { let data = try Postman.encode(snapshot); try data.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) } catch { NSLog("Postino workspace save failed: %@", error.localizedDescription) } }
-        pending = work; if now { queue.sync(execute: work) } else { queue.asyncAfter(deadline: .now() + 0.4, execute: work) }
+        let work = DispatchWorkItem {
+            do { let data = try Postman.encode(snapshot); try data.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
+            catch { NSLog("Postino workspace save failed: %@", error.localizedDescription) }
+            if let completion { afterAppKitEvent(completion) }
+        }
+        pending = work
+        if completion != nil { queue.async(execute: work) }
+        else if now { queue.sync(execute: work) }
+        else { queue.asyncAfter(deadline: .now() + 0.4, execute: work) }
     }
 }

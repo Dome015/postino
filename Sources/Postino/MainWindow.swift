@@ -11,25 +11,31 @@ final class RequestTab {
     func resetWork() { workCancellation.cancel(); workCancellation = WorkCancellation(); generation = UUID(); formatting = false }
     init(_ request: RequestItem, saved: Bool = true) { draft = RequestDraft(request, saved: saved) }
 }
-final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSMenuDelegate {
+final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSMenuDelegate, NSToolbarDelegate {
     let store = Workspace(); var tabs: [RequestTab] = []; var current: RequestTab?; var sidebarMode = 0; var selectedCollection: Collection?
-    let outline = NSOutlineView(); let search = InputSearchField(); let env = RelayPopup(); let method = RelayPopup(); let url = InputField(); let send = RelayButton(frame: .zero); let tabBar = NSView(); let tabScroll = NSScrollView(); let save = RelayButton(frame: .zero)
+    let outline = CollectionOutlineView(); let search = InputSearchField(); let env = RelayPopup(); let method = RelayPopup(); let url = InputField(); let send = RelayButton(frame: .zero); let tabBar = NSView(); let tabScroll = RequestTabScrollView(); let save = RelayButton(frame: .zero)
     let sidebarSplit = NSSplitViewController()
+    private var windowToolbarItems: [NSToolbarItem] = []
     let requestSegment = RelaySegments(labels: ["Body", "Params", "Headers", "Authorization"], trackingMode: .selectOne, target: nil, action: nil)
     let responseSegment = RelaySegments(labels: ["Body", "Headers"], trackingMode: .selectOne, target: nil, action: nil)
     let params = PairEditor(configuration: .parameters); let headers = PairEditor(configuration: .headers); let form = PairEditor(configuration: .form); let body = CodeEditor(editable: true); let response = CodeEditor(editable: false)
-    let emptyResponse = Surface(bandLightColor); let emptyTitle = label("Send your first request", size: 15, weight: .semibold); let emptyMessage = label("The response will appear here.", size: 12, color: .secondaryLabelColor)
+    let emptyResponse = Surface(bandLightColor); let emptyTitle = NSTextField(wrappingLabelWithString: "Send your first request"); let emptyMessage = NSTextField(wrappingLabelWithString: "The response will appear here.")
+    let emptyIllustration = NSImageView()
+    let unsentIllustration = Bundle.main.url(forResource: "ResponseEmpty", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
+    let errorIllustration = Bundle.main.url(forResource: "ResponseError", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
     let requestHost = Surface(bandDarkColor); let bodyHost = NSView(); let responseHost = NSView(); let bodyMode = RelayPopup(); let authMode = RelayPopup(); let authFields = PairEditor(configuration: .credentials)
     let status = label("Ready to send", weight: .medium, color: .secondaryLabelColor); let responseInfo = label("", size: 11, color: .secondaryLabelColor); let footer = label("", size: 11, color: .secondaryLabelColor)
     let chooseFile = RelayButton(frame: .zero); let pretty = RelayButton(frame: .zero); let saveResponse = RelayButton(frame: .zero); let copyResponse = RelayButton(frame: .zero); var copyingResponse = false; var copyFeedbackReset: DispatchWorkItem?; let responseFind = RelayButton(frame: .zero); let requestHint = label("", size: 11, color: .secondaryLabelColor)
     var sidebarDragNode: CollectionNode?; var sidebarDragToken: String?
+    var sidebarCutItem: AnyObject?; var sidebarCutChangeCount: Int?
     var collapsedFolders = Set<ObjectIdentifier>(); var restoringTree = false; var closingApproved = false; var confirmingClose = false
     var updating = false; var filtered: [Any] = []; var environmentWindow: NSWindow?; var environmentEditor: PairEditor?; var envName: NSTextField?; var environmentIndex = -1
     lazy var responseReader = ResponseReader(response)
     let worker = DispatchQueue(label: "relay.response", qos: .userInitiated, attributes: .concurrent)
     init() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        w.title = "Postino"; w.titlebarAppearsTransparent = true; w.minSize = NSSize(width: 980, height: 700); w.setFrameAutosaveName("PostauomoMain"); if let screen = NSScreen.main { var f = w.frame; f.size.width = min(f.width, screen.visibleFrame.width - 32); f.size.height = min(f.height, screen.visibleFrame.height - 32); w.setFrame(f, display: false) }; w.center()
+        w.title = "Postino"; w.titleVisibility = .hidden; w.titlebarAppearsTransparent = true; w.titlebarSeparatorStyle = .none; w.toolbarStyle = .unified; w.backgroundColor = bandDarkColor
+        w.minSize = NSSize(width: 980, height: 700); w.setFrameAutosaveName("PostauomoMain"); if let screen = NSScreen.main { var f = w.frame; f.size.width = min(f.width, screen.visibleFrame.width - 32); f.size.height = min(f.height, screen.visibleFrame.height - 32); w.setFrame(f, display: false) }; w.center()
         super.init(window: w); w.delegate = self
         build(); refreshEnvironments(); reloadSidebar()
         if let first = store.collections.first?.allRequests.first { open(first) } else { newRequest() }
@@ -37,8 +43,10 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     required init?(coder: NSCoder) { fatalError() }
     func build() {
         guard let content = window?.contentView else { return }
+        // Paint through the transparent native title bar; AppKit owns its buttons and dragging.
+        pin(Surface(bandDarkColor), in: content)
         let root = NSView(); root.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(root); NSLayoutConstraint.activate([root.leadingAnchor.constraint(equalTo: content.leadingAnchor), root.trailingAnchor.constraint(equalTo: content.trailingAnchor), root.topAnchor.constraint(equalTo: content.safeAreaLayoutGuide.topAnchor), root.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
-        let split = NSSplitView(); sidebarSplit.splitView = split; sidebarSplit.view = split; split.isVertical = true; split.dividerStyle = .thin
+        let split = ResizeSplitView(); sidebarSplit.splitView = split; sidebarSplit.view = split; split.isVertical = true; split.dividerStyle = .thin
         let sidebar = Surface(bandDarkColor); let main = Surface(canvasColor)
         let sidebarController = NSViewController(); sidebarController.view = sidebar
         let mainController = NSViewController(); mainController.view = main
@@ -47,28 +55,33 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         let mainItem = NSSplitViewItem(viewController: mainController); mainItem.minimumThickness = 620
         sidebarSplit.addSplitViewItem(sidebarItem); sidebarSplit.addSplitViewItem(mainItem)
         split.autosaveName = "PostauomoSidebarWidth"
-        let logo = NSImageView(); logo.image = Bundle.main.url(forResource: "Logo", withExtension: "png").flatMap { NSImage(contentsOf: $0) }; logo.imageScaling = .scaleProportionallyUpOrDown; logo.setAccessibilityLabel("Postino logo"); logo.widthAnchor.constraint(equalToConstant: 40).isActive = true; logo.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        let brand = stack([logo, label("Postino", size: 15, weight: .semibold), spacer()], spacing: 8)
-        let brandBlock = padded(brand, x: 10, y: 8)
-        brandBlock.heightAnchor.constraint(equalToConstant: 56).isActive = true
         let sidebarSegment = RelaySegments(labels: ["Collections", "History"], trackingMode: .selectOne, target: self, action: #selector(sidebarSegmentChanged(_:))); sidebarSegment.selectedSegment = 0; compact(sidebarSegment); sidebarSegment.font = .systemFont(ofSize: 12)
         search.placeholderString = "Filter requests"; search.delegate = self; search.setAccessibilityLabel("Filter collections and requests")
         let column = NSTableColumn(identifier: .init("name")); column.width = 220; column.minWidth = 100; column.resizingMask = .autoresizingMask; outline.addTableColumn(column); outline.outlineTableColumn = column; outline.headerView = nil; outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle; outline.rowHeight = 26; outline.delegate = self; outline.dataSource = self; outline.autoresizingMask = [.width]; outline.style = .sourceList; outline.indentationPerLevel = 14; outline.intercellSpacing = NSSize(width: 0, height: 0); outline.backgroundColor = bandDarkColor; outline.target = self; outline.action = #selector(sidebarSelected); outline.setAccessibilityLabel("Collections and requests")
         configureCollectionTree()
         let sidebarScroll = NSScrollView(); sidebarScroll.documentView = outline; sidebarScroll.hasVerticalScroller = true; sidebarScroll.autohidesScrollers = true; sidebarScroll.drawsBackground = false
         let filters = stack([stack([sidebarSegment, spacer()], spacing: 0), search], vertical: true, spacing: 8); filters.alignment = .width
-        let topContent = stack([brandBlock, padded(filters, x: 10, top: 0, bottom: 8)], vertical: true, spacing: 0); topContent.alignment = .width
-        let top = band(topContent, color: bandLightColor, name: "sidebarHeaderBand")
+        let top = band(padded(filters, x: 10, y: 8), color: bandDarkColor, name: "sidebarHeaderBand")
         let importButton = button("Import", symbol: "square.and.arrow.down", target: self, action: #selector(importFiles)); importButton.toolTip = "Import Postman collection or environment JSON (⌘I)"
         let exportButton = button("Export", symbol: "square.and.arrow.up", target: self, action: #selector(exportCollection)); exportButton.toolTip = "Export the selected collection as Postman v2.1 JSON (⇧⌘E)"
         let sideLayout = stack([top, sidebarScroll], vertical: true, spacing: 0); sideLayout.alignment = .width; pin(sideLayout, in: sidebar)
-        let add = button("New request", symbol: "plus", target: self, action: #selector(newRequest)); let newCollectionButton = button("Collection", symbol: "folder.badge.plus", target: self, action: #selector(newCollection))
+        let add = button("New request", symbol: "plus", target: self, action: #selector(newRequest)); let newCollectionButton = button("New collection", symbol: "folder.badge.plus", target: self, action: #selector(newCollection))
         env.target = self; env.action = #selector(environmentChanged); compact(env); env.widthAnchor.constraint(equalToConstant: 190).isActive = true; env.toolTip = "Active environment · variables override collection values"; env.setAccessibilityLabel("Active environment")
         let envEdit = button("", symbol: "slider.horizontal.3", target: self, action: #selector(editEnvironments)); envEdit.toolTip = "Manage environments"
         envEdit.style = .plain
         save.title = "Save"; save.target = self; save.action = #selector(saveRequest); save.toolTip = "Save request (⌘S)"
-        let toolbar = ControlBar([add, newCollectionButton, save, spacer(), env, envEdit]); toolbar.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        tabScroll.documentView = tabBar; tabScroll.hasHorizontalScroller = true; tabScroll.autohidesScrollers = true; tabScroll.drawsBackground = true; tabScroll.backgroundColor = bandDarkColor; tabScroll.horizontalScrollElasticity = .none
+        let environmentControls = stack([env, envEdit], spacing: 6)
+        environmentControls.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        for (name, title, view) in [("newRequest", "New request", add as NSView), ("newCollection", "New collection", newCollectionButton as NSView), ("saveRequest", "Save", save as NSView), ("environment", "Active environment", environmentControls as NSView)] {
+            let item = NSToolbarItem(itemIdentifier: .init("Postino." + name))
+            // A neutral host preserves the shared button cell instead of adopting toolbar bezels.
+            item.label = title; item.paletteLabel = title; item.view = padded(view, x: 0, y: 0); item.isBordered = false; item.autovalidates = false
+            windowToolbarItems.append(item)
+        }
+        let toolbar = NSToolbar(identifier: "PostinoUnifiedToolbar")
+        toolbar.delegate = self; toolbar.displayMode = .iconOnly; toolbar.allowsUserCustomization = false; toolbar.showsBaselineSeparator = false
+        window?.toolbar = toolbar
+        tabScroll.documentView = tabBar
         tabScroll.heightAnchor.constraint(equalToConstant: 44).isActive = true
         method.addItems(withTitles: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]); method.target = self; method.action = #selector(methodChanged); compact(method); method.font = .monospacedSystemFont(ofSize: 12, weight: .semibold); method.widthAnchor.constraint(equalToConstant: 90).isActive = true; method.setAccessibilityLabel("HTTP method")
         url.font = .monospacedSystemFont(ofSize: 13, weight: .regular); url.placeholderString = "https://api.example.com/v1/resource"; url.delegate = self; url.setAccessibilityLabel("Request URL");
@@ -97,9 +110,27 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         responseReader.failed = { [weak self] message in self?.footer.stringValue = message }
         pin(response, in: responseHost, inset: 10, verticalInset: 8)
         pin(emptyResponse, in: responseHost)
-        let emptyContent = stack([emptyTitle, emptyMessage, label("⌘ Return to send   ·   ⌘ I to import", size: 11, color: .tertiaryLabelColor)], vertical: true, spacing: 8)
-        emptyContent.alignment = .centerX; emptyContent.translatesAutoresizingMaskIntoConstraints = false; emptyResponse.addSubview(emptyContent)
-        NSLayoutConstraint.activate([emptyContent.centerXAnchor.constraint(equalTo: emptyResponse.centerXAnchor), emptyContent.centerYAnchor.constraint(equalTo: emptyResponse.centerYAnchor)])
+        emptyTitle.font = .systemFont(ofSize: 15, weight: .semibold); emptyTitle.maximumNumberOfLines = 2
+        emptyMessage.font = .systemFont(ofSize: 12); emptyMessage.textColor = .secondaryLabelColor; emptyMessage.maximumNumberOfLines = 4
+        for text in [emptyTitle, emptyMessage] { text.alignment = .center; text.lineBreakMode = .byWordWrapping; text.setContentHuggingPriority(.init(1), for: .horizontal) }
+        emptyIllustration.imageScaling = .scaleProportionallyDown; emptyIllustration.imageAlignment = .alignCenter; emptyIllustration.setAccessibilityElement(false)
+        emptyIllustration.setContentCompressionResistancePriority(.init(1), for: .vertical)
+        emptyIllustration.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        emptyIllustration.identifier = .init("responseIllustration")
+        // Use a centered stack directly: the shared vertical helper stretches every child.
+        let emptyContent = NSStackView(views: [emptyIllustration, emptyTitle, emptyMessage])
+        emptyContent.orientation = .vertical; emptyContent.alignment = .centerX; emptyContent.spacing = 8; emptyContent.setCustomSpacing(14, after: emptyIllustration)
+        emptyContent.setHuggingPriority(.init(1), for: .horizontal)
+        emptyContent.identifier = .init("responsePlaceholder"); emptyContent.translatesAutoresizingMaskIntoConstraints = false; emptyResponse.addSubview(emptyContent)
+        let preferredWidth = emptyContent.widthAnchor.constraint(equalTo: emptyResponse.widthAnchor, constant: -48); preferredWidth.priority = .init(100)
+        let imageHeight = emptyIllustration.heightAnchor.constraint(equalToConstant: 140); imageHeight.priority = .defaultLow
+        NSLayoutConstraint.activate([
+            emptyContent.centerXAnchor.constraint(equalTo: emptyResponse.centerXAnchor), emptyContent.centerYAnchor.constraint(equalTo: emptyResponse.centerYAnchor),
+            emptyContent.widthAnchor.constraint(lessThanOrEqualToConstant: 520), emptyContent.widthAnchor.constraint(lessThanOrEqualTo: emptyResponse.widthAnchor, constant: -32), preferredWidth,
+            emptyContent.topAnchor.constraint(greaterThanOrEqualTo: emptyResponse.topAnchor, constant: 8), emptyContent.bottomAnchor.constraint(lessThanOrEqualTo: emptyResponse.bottomAnchor, constant: -8),
+            emptyTitle.widthAnchor.constraint(equalTo: emptyContent.widthAnchor), emptyMessage.widthAnchor.constraint(equalTo: emptyContent.widthAnchor),
+            emptyIllustration.widthAnchor.constraint(equalTo: emptyIllustration.heightAnchor), emptyIllustration.heightAnchor.constraint(greaterThanOrEqualToConstant: 24), emptyIllustration.heightAnchor.constraint(lessThanOrEqualToConstant: 140), imageHeight
+        ])
         responseHost.heightAnchor.constraint(greaterThanOrEqualToConstant: 170).isActive = true
         footer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         requestHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -114,10 +145,21 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         let verticalSplit = ResizeSplitView(); verticalSplit.isVertical = false; verticalSplit.dividerStyle = .thin; verticalSplit.addArrangedSubview(requestPanel); verticalSplit.addArrangedSubview(responsePanel)
         verticalSplit.setContentHuggingPriority(.init(1), for: .vertical)
         verticalSplit.setContentCompressionResistancePriority(.init(1), for: .vertical)
-        let mainLayout = stack([toolbar, tabScroll, verticalSplit], vertical: true, spacing: 0); mainLayout.alignment = .width; pin(mainLayout, in: main)
+        let mainLayout = stack([tabScroll, verticalSplit], vertical: true, spacing: 0); mainLayout.alignment = .width; pin(mainLayout, in: main)
         split.setContentHuggingPriority(.init(1), for: .vertical)
-        let rootLayout = stack([split, sharedFooter], vertical: true, spacing: 0); rootLayout.alignment = .width; pin(rootLayout, in: root)
+        let toolbarDivider = Surface(controlFillColor); toolbarDivider.identifier = .init("toolbarDivider"); toolbarDivider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        let footerDivider = Surface(controlFillColor); footerDivider.identifier = .init("footerDivider"); footerDivider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        let rootLayout = stack([toolbarDivider, split, footerDivider, sharedFooter], vertical: true, spacing: 0); rootLayout.alignment = .width; pin(rootLayout, in: root)
         DispatchQueue.main.async { verticalSplit.setPosition(278, ofDividerAt: 0) }
+    }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        var identifiers = windowToolbarItems.map(\.itemIdentifier)
+        identifiers.insert(.flexibleSpace, at: 3)
+        return identifiers
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        windowToolbarItems.first { $0.itemIdentifier == itemIdentifier }
     }
     func draftChanged() { if !updating { refreshTabBar() } }
     func commitFields() { window?.makeFirstResponder(nil); if let r = current?.request { if r.url != url.stringValue { r.setURL(url.stringValue) } } }
@@ -243,6 +285,9 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     @objc func sidebarSelected() {
         let row = outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow
         guard let item = outline.item(atRow: row) else { return }
+        // Opening a request commits the editor and clears first responder.
+        // A tree click must keep tree focus for the subsequent Edit shortcut.
+        defer { window?.makeFirstResponder(outline) }
         if outlineView(outline, isItemExpandable: item), let event = NSApp.currentEvent, event.type == .leftMouseUp || event.type == .leftMouseDown {
             let point = outline.convert(event.locationInWindow, from: nil)
             if !outline.frameOfOutlineCell(atRow: row).contains(point) { if outline.isItemExpanded(item) { outline.collapseItem(item) } else { outline.expandItem(item) } }
@@ -255,9 +300,10 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     func outlineViewItemDidCollapse(_ notification: Notification) { if !restoringTree, let item = notification.userInfo?["NSObject"] as AnyObject? { collapsedFolders.insert(ObjectIdentifier(item)) } }
     func outlineViewItemDidExpand(_ notification: Notification) { if !restoringTree, let item = notification.userInfo?["NSObject"] as AnyObject? { collapsedFolders.remove(ObjectIdentifier(item)) } }
     func contextItem() -> Any? { outline.item(atRow: outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow) }
-    @objc func renameNode() { let item = contextItem(); if let c = item as? Collection { prompt("Rename collection", value: c.name) { [weak self] value in c.name = value; self?.store.save(); self?.reloadSidebar() } } else if let n = item as? CollectionNode { prompt("Rename \(n.request == nil ? "folder" : "request")", value: n.request?.name ?? n.name) { [weak self] value in n.name = value; n.request?.name = value; self?.tabs.filter { $0.draft.source === n.request }.forEach { $0.request.name = value }; self?.store.save(); self?.reloadSidebar(); self?.displayCurrent() } } }
+    @objc func renameNode() { renameTreeItem(contextItem()) }
+    func renameTreeItem(_ item: Any?) { if let c = item as? Collection { prompt("Rename collection", value: c.name) { [weak self] value in c.name = value; self?.store.save(); self?.reloadSidebar() } } else if let n = item as? CollectionNode { prompt("Rename \(n.request == nil ? "folder" : "request")", value: n.request?.name ?? n.name) { [weak self] value in n.name = value; n.request?.name = value; self?.tabs.filter { $0.draft.source === n.request }.forEach { $0.request.name = value }; self?.store.save(); self?.reloadSidebar(); self?.displayCurrent() } } }
     @objc func deleteNode() {
-        guard let item = contextItem(), item is Collection || item is CollectionNode else { return }; let alert = NSAlert(); alert.messageText = "Delete this \(item is Collection ? "collection" : "item")?"; alert.informativeText = "This removes it from your local workspace."; alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel"); alert.beginSheetModal(for: window!) { [weak self] result in guard result == .alertFirstButtonReturn, let self = self else { return }; if let c = item as? Collection { self.store.collections.removeAll { $0 === c }; if self.selectedCollection === c { self.selectedCollection = nil } } else if let n = item as? CollectionNode { func remove(_ nodes: inout [CollectionNode]) { nodes.removeAll { $0 === n }; for child in nodes { remove(&child.children) } }; for c in self.store.collections { remove(&c.nodes) } }; self.store.save(); self.reloadSidebar() }
+        deleteTreeItem(contextItem())
     }
     @objc func importFiles() {
         commitFields(); let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = true; panel.message = "Select Postman collection v2.1 or environment JSON files."; panel.beginSheetModal(for: window!) { [weak self] result in guard result == .OK, let self = self else { return }; let urls = panel.urls; self.status.stringValue = "Importing…"; self.worker.async {
@@ -293,10 +339,13 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     var activeFile: URL? { current?.prettyFile ?? current?.response?.file }
     @objc func responseSectionChanged() { renderResponse() }
     func renderResponse() {
+        emptyIllustration.image = current?.error == nil ? unsentIllustration : errorIllustration
+        emptyIllustration.isHidden = current?.transfer != nil
+        emptyMessage.toolTip = current?.error
         guard let tab = current else { return }; emptyResponse.isHidden = tab.response != nil; response.isHidden = tab.response == nil; emptyTitle.stringValue = tab.transfer != nil ? "Receiving response…" : tab.error == nil ? "Send your first request" : "Request could not be completed"; emptyMessage.stringValue = tab.error ?? (tab.transfer != nil ? "Streaming directly to disk." : "The response will appear here."); send.title = tab.transfer == nil ? "Send" : "Cancel"; pretty.isEnabled = !tab.formatting && tab.response != nil && (tab.response!.contentType.contains("json") || tab.response!.contentType.isEmpty); pretty.title = tab.formatting ? "Formatting…" : tab.prettyFile == nil ? "Pretty JSON" : "Raw"; saveResponse.isEnabled = tab.response != nil; copyResponse.isEnabled = tab.response != nil && !copyingResponse; responseFind.isEnabled = tab.response != nil
         if tab.transfer != nil { status.stringValue = "Sending request…"; status.textColor = accentInk; responseInfo.stringValue = ""; response.set(""); footer.stringValue = "Downloading directly to disk. You can cancel at any time."; responseReader.clear(); return }
-        guard let result = tab.response else { status.stringValue = tab.error == nil ? "Ready to send" : "Request failed"; status.textColor = tab.error == nil ? .secondaryLabelColor : .systemRed; responseInfo.stringValue = ""; response.set(""); footer.stringValue = ""; responseReader.clear(); return }
-        status.stringValue = "\(result.status) \(Self.reason(result.status))"; status.textColor = result.status < 400 ? .systemGreen : .systemRed; responseInfo.stringValue = "\(String(format: "%.0f", result.duration * 1000)) ms   ·   \(ByteCountFormatter.string(fromByteCount: result.bytes, countStyle: .file))"
+        guard let result = tab.response else { status.stringValue = tab.error == nil ? "Ready to send" : "Request failed"; status.textColor = tab.error == nil ? .secondaryLabelColor : errorInk; responseInfo.stringValue = ""; response.set(""); footer.stringValue = ""; responseReader.clear(); return }
+        status.stringValue = "\(result.status) \(Self.reason(result.status))"; status.textColor = result.status < 400 ? successInk : errorInk; responseInfo.stringValue = "\(String(format: "%.0f", result.duration * 1000)) ms   ·   \(ByteCountFormatter.string(fromByteCount: result.bytes, countStyle: .file))"
         if responseSegment.selectedSegment == 1 { response.set(result.headers.sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }.map { "\($0.key): \($0.value)" }.joined(separator: "\n")); footer.stringValue = ""; responseReader.clear(); return }
         footer.stringValue = ""
         if let file = activeFile { responseReader.open(file, highlight: result.contentType.contains("json")) }
@@ -335,11 +384,26 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     }
     @objc func exportResponse() { guard let result = current?.response else { return }; let panel = NSSavePanel(); panel.nameFieldStringValue = result.contentType.contains("json") ? "response.json" : "response.txt"; panel.beginSheetModal(for: window!) { [weak self] state in guard state == .OK, let destination = panel.url, let self = self else { return }; self.worker.async { do { let h = try FileHandle(forReadingFrom: result.file); defer { try? h.close() }; guard FileManager.default.createFile(atPath: destination.path, contents: nil) else { throw RelayError.message("Cannot write response file.") }; let out = try FileHandle(forWritingTo: destination); defer { try? out.close() }; try ResponseFile.copy(from: h, to: out) } catch { DispatchQueue.main.async { self.showError(error.localizedDescription) } } } } }
     func confirmCloseAll(completion: @escaping (Bool) -> Void) {
+        if closingApproved { completion(true); return }
         commitFields(); guard !confirmingClose else { completion(false); return }; confirmingClose = true
         let dirty = tabs.filter { $0.draft.isDirty }
-        func next(_ index: Int) { if index == dirty.count { confirmingClose = false; closingApproved = true; completion(true); return }; confirmDiscard(dirty[index]) { approved in if approved { next(index + 1) } else { self.confirmingClose = false; completion(false) } } }
+        func next(_ index: Int) { if index == dirty.count { confirmingClose = false; closingApproved = true; completion(true); return }; confirmDiscard(dirty[index]) { approved in afterAppKitEvent { if approved { next(index + 1) } else { self.confirmingClose = false; completion(false) } } } }
         next(0)
     }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { if closingApproved { return true }; confirmCloseAll { approved in if approved { sender.performClose(nil) } }; return false }
-    func windowWillClose(_ notification: Notification) { commitFields(); store.save(now: true); tabs.forEach { $0.transfer?.cancel(); $0.resetWork() }; NSApp.terminate(nil) }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if closingApproved { return true }
+        commitFields()
+        guard !confirmingClose else { return false }
+        if !tabs.contains(where: { $0.draft.isDirty }) { closingApproved = true; return true }
+        confirmCloseAll { approved in
+            // Finish the sheet and the original close event before closing the window.
+            if approved { afterAppKitEvent { sender.close() } }
+        }
+        return false
+    }
+    func stopWork() { tabs.forEach { $0.transfer?.cancel(); $0.resetWork() } }
+    func windowWillClose(_ notification: Notification) {
+        stopWork()
+        afterAppKitEvent { NSApp.terminate(nil) }
+    }
 }

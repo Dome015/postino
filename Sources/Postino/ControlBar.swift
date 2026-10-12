@@ -49,7 +49,9 @@ final class TreeCellView: NSTableCellView {
     required init?(coder: NSCoder) { fatalError() }
 }
 
-/// A visible resize affordance, matching the sidebar's thin black divider.
+/// Both resize dividers share the same solid fill as buttons and dropdowns.
 final class ResizeSplitView: NSSplitView {
-    override func drawDivider(in rect: NSRect) { NSColor.black.setFill(); rect.fill() }
+    override var dividerColor: NSColor { controlFillColor }
+    override func drawDivider(in rect: NSRect) { dividerColor.setFill(); rect.fill() }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
 }

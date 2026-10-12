@@ -26,6 +26,7 @@ private final class TestDrag: NSObject, NSDraggingInfo {
 struct SidebarChecks {
     static func main() throws {
         _ = NSApplication.shared
+        NSApp.setActivationPolicy(.regular)
         let controller = MainWindow()
         let first = try Collection(json: ["info": ["name": "First"], "item": [["name": "Folder", "item": [["name": "Keep", "request": ["url": "https://example.com"]], ["name": "Hidden", "request": ["url": "https://example.com"]], ["name": "Keep last", "request": ["url": "https://example.com"]]]]]])
         let second = try Collection(json: ["info": ["name": "Second"], "auth": ["type": "bearer"], "variable": [["key": "host", "value": "second"]], "item": [JSON]()])
@@ -73,6 +74,68 @@ struct SidebarChecks {
         controller.store.save(now: true)
         let reloaded = Workspace()
         precondition(reloaded.collections[0].nodes[0].children.last?.request?.name == "Captured folder", "Tree edits persist to the workspace")
-        print("Passed sidebar creation, selection, filtered drop, moved draft save, and workspace persistence checks")
+        let clipboard = NSPasteboard.general
+        let savedClipboard = clipboard.pasteboardItems?.map { item -> NSPasteboardItem in
+            let saved = NSPasteboardItem()
+            for type in item.types { if let data = item.data(forType: type) { saved.setData(data, forType: type) } }
+            return saved
+        } ?? []
+        defer { clipboard.clearContents(); if !savedClipboard.isEmpty { clipboard.writeObjects(savedClipboard) } }
+        func select(_ item: Any) {
+            controller.search.stringValue = ""; controller.reloadSidebar(selecting: item)
+            precondition(controller.outline.selectedRow >= 0)
+        }
+        select(moving)
+        controller.outline.copy(nil)
+        let clipboardJSON = try Postman.read(Data(clipboard.string(forType: .string)!.utf8))
+        precondition(clipboardJSON["name"] as? String == moving.name, "Copy also provides interoperable JSON text")
+        let copiedIDs = Set(first.allRequests.map(\.id) + second.allRequests.map(\.id))
+        select(folder); controller.outline.paste(nil)
+        let pasted = folder.children.last!
+        precondition(pasted !== moving && pasted.request?.name == moving.request?.name && !copiedIDs.contains(pasted.request!.id), "Copy/paste preserves content with fresh request identity")
+        select(pasted); controller.open(pasted.request!); controller.current!.request.name = "Draft survives cut"
+        controller.outline.cut(nil)
+        precondition(folder.children.contains { $0 === pasted }, "Cut does not remove data until paste succeeds")
+        select(second); controller.outline.paste(nil)
+        precondition(second.nodes.last === pasted && !folder.children.contains { $0 === pasted }, "Cut/paste moves the existing request")
+        precondition(controller.window!.firstResponder === controller.outline, "Paste keeps keyboard focus in the tree for subsequent shortcuts")
+        precondition(controller.current!.draft.source === pasted.request && controller.current!.draft.isDirty && controller.current!.request.variables["host"] == "second", "Cut/paste retains the dirty open draft and refreshes inheritance")
+        select(first); controller.outline.copy(nil); controller.outline.paste(nil)
+        let copiedCollection = controller.selectedCollection!
+        precondition(copiedCollection !== first && copiedCollection.allRequests.count == first.allRequests.count, "Entire collections can be copied")
+        precondition(Set(copiedCollection.allRequests.map(\.id)).isDisjoint(with: Set(first.allRequests.map(\.id))), "Copied collection requests have fresh identities")
+        select(folder); controller.outline.cut(nil); select(folder)
+        precondition(!controller.canPasteTreeItem, "A cut folder cannot be pasted into itself")
+        clipboard.clearContents(); clipboard.setString("ordinary text", forType: .string)
+        select(second)
+        precondition(!controller.canPasteTreeItem, "Unrelated clipboard contents do not move a previously cut item")
+        select(moving); let beforeDuplicate = second.nodes.count
+        controller.outline.duplicate(nil)
+        precondition(second.nodes.count == beforeDuplicate + 1 && second.nodes[1].name.hasSuffix(" copy"), "Duplicate inserts a fresh sibling without using the clipboard")
+        precondition(controller.window!.firstResponder === controller.outline, "Duplicate keeps keyboard focus in the tree")
+        controller.removeTreeItem(pasted)
+        precondition(!controller.tabs.contains { $0.draft.source === pasted.request }, "Deleting a request closes its draft, preventing accidental resurrection on Save")
+        controller.sidebarMode = 1
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(CollectionOutlineView.copy(_:)), keyEquivalent: "c")
+        precondition(!controller.outline.validateUserInterfaceItem(copyItem), "History does not expose collection editing actions")
+        controller.sidebarMode = 0; controller.reloadSidebar(); select(moving)
+        let application = AppDelegate(); application.controller = controller; application.makeMenu()
+        controller.showWindow(nil); controller.window!.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
+        controller.window!.makeFirstResponder(controller.outline)
+        controller.sidebarSelected()
+        precondition(controller.window!.firstResponder === controller.outline, "Opening a selected request keeps keyboard focus in the tree")
+        controller.window!.makeFirstResponder(controller.url)
+        precondition(controller.window!.firstResponder !== controller.outline, "Text input takes editing focus away from the tree")
+        let edit = NSApp.mainMenu!.items.first { $0.title == "Edit" }!.submenu!
+        precondition(edit.items.first { $0.title == "Delete" }?.keyEquivalent == "\u{8}", "Delete is bound to Command-Backspace")
+        let deleteEvent = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: controller.window!.windowNumber, context: nil, characters: "\u{7f}", charactersIgnoringModifiers: "\u{7f}", isARepeat: false, keyCode: 51)!
+        precondition(!controller.outline.performKeyEquivalent(with: deleteEvent) && controller.window!.attachedSheet == nil, "Command-Delete in a text input never deletes a tree item")
+        controller.window!.makeFirstResponder(controller.outline)
+        precondition(controller.outline.performKeyEquivalent(with: deleteEvent) && controller.window!.attachedSheet != nil, "The physical Delete key opens a confirmation when the tree has focus")
+        controller.window!.endSheet(controller.window!.attachedSheet!, returnCode: .alertSecondButtonReturn)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
+        print("Passed sidebar creation, selection, drag/drop, persistence, copy/cut/paste, duplication, and deletion checks")
     }
 }

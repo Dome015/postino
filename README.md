@@ -7,7 +7,7 @@
 <p align="center">A native, fully local HTTP client for macOS.</p>
 
 <p align="center">
-  <a href="https://github.com/Dome015/postino/releases">Download for macOS</a> ·
+  <a href="https://github.com/Dome015/postino/releases">Download for macOS</a>
 </p>
 
 ## Installation
@@ -16,7 +16,7 @@ Requires macOS 13 or later. Release downloads are for Apple Silicon Macs.
 
 1. Download the Postino ZIP from [Releases](https://github.com/Dome015/postino/releases).
 2. Unzip it and drag **Postino.app** into **Applications**.
-3. Open Postino. If macOS blocks the first launch, use `sudo xattr -rd com.apple.quarantine /path/to/Postino.app`.
+3. Open Postino. If macOS blocks the first launch, use `sudo xattr -rd com.apple.quarantine /Applications/Postino.app` (or the path in which the APP file is located, if not under Applications).
 
 ## Usage
 

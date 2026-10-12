@@ -33,6 +33,7 @@ done
 cp Info.plist "$APP/Contents/Info.plist"
 printf '{"sdk":"%s","swift":"%s","architecture":"%s","deploymentTarget":"13.0"}\n' "$SDK_VERSION" "$SWIFT_VERSION" "$ARCH" > "$APP/Contents/Resources/BuildInfo.json"
 if [[ -f Resources/Logo.png ]]; then cp Resources/Logo.png "$APP/Contents/Resources/"; fi
+cp Resources/ResponseEmpty.png Resources/ResponseError.png "$APP/Contents/Resources/"
 if [[ -f Resources/DockIcon.png ]]; then cp Resources/DockIcon.png "$APP/Contents/Resources/"; fi
 if [[ -f Resources/PostinoFace.icns ]]; then cp Resources/PostinoFace.icns "$APP/Contents/Resources/"; fi
 rm -f "$APP/Contents/Resources/AppIcon.icns" "$APP/Contents/Resources/PostinoIcon.icns" "$APP/Contents/Resources/PostinoMacIcon.icns" "$APP/Contents/Resources/PostinoDock.icns"

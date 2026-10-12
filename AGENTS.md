@@ -12,7 +12,8 @@ The app name is **Postino**. Earlier names include Postauomo and Relay. Several 
 
 | Location | Responsibility |
 | --- | --- |
-| `Sources/Postino/main.swift` | App lifecycle, menus, keyboard shortcuts, About panel, quit confirmation. |
+| `Sources/Postino/main.swift` | Application entry point. |
+| `Sources/Postino/Application.swift` | App lifecycle, menus, keyboard shortcuts, About panel, quit confirmation, modal-safe run-loop continuations. |
 | `Sources/Postino/MainWindow.swift` | Window composition, request tabs, draft coordination, send/cancel, response presentation, import/export, clipboard feedback. |
 | `Sources/Postino/Components.swift` | Shared native buttons, popup menus, segmented controls, colors, layout helpers, and request tabs. |
 | `Sources/Postino/ControlBar.swift` | Background bands, flat capsule surfaces, control chrome, centered tree cells, resize-divider drawing. |
@@ -21,7 +22,7 @@ The app name is **Postino**. Earlier names include Postauomo and Relay. Several 
 | `Sources/Postino/CodeEditor.swift` | Native text editor, JSON tokenization/highlighting, selection callbacks, and Find routing. |
 | `Sources/Postino/ResponseReader.swift` | Bounded UTF-8 response viewport, scrolling, seeking, and JSON context. |
 | `Sources/Postino/ResponseFind.swift` | Full-file read-only native Find client and sparse UTF-16 search index. |
-| `Sources/Postino/CollectionSidebar.swift` | Collection tree context menus, creation, selection, drag/drop, and insertion mapping. |
+| `Sources/Postino/CollectionSidebar.swift` | Collection tree responder actions, clipboard, context menus, creation, selection, drag/drop, and insertion mapping. |
 | `Sources/Postino/Environments.swift` | Environment-management window and variable editing. |
 | `Sources/Postino/Workspace.swift` | Workspace persistence, history, storage migration, demo mode, and response cleanup. |
 | `Sources/RelayCore/Models.swift` | Postman models, unknown metadata preservation, variables, and JSON interchange. |
@@ -132,7 +133,8 @@ The fixture listens on `127.0.0.1:18765`. Core checks cover import/export metada
 | --- | --- |
 | `./scripts/test-ui.sh` | Native control geometry, capsule groups, flat surfaces, bands, sidebar resizing, method/body-format labels, JSON highlighting and cancellation, bounded scrolling, UTF-8 continuity, search selection, and copy feedback. |
 | `./scripts/test-editor.sh` | All five shared table configurations, resizing, row focus, explicit addition, checkbox stability, inline deletion, and multipart file metadata. |
-| `./scripts/test-sidebar.sh` | Native tree creation/selection, filtered insertion, saving moved drafts, and workspace persistence. |
+| `./scripts/test-sidebar.sh` | Native tree creation/selection, filtered insertion, saving moved drafts, workspace persistence, copy/cut/paste, fresh identities, duplicate, and deletion of open drafts. |
+| `./scripts/test-lifecycle.sh` | Real AppKit processes: clean close, Save/Discard/Cancel through window close and Quit, multiple dirty tabs, large-workspace close latency, closing with the environment window open, and native tree Edit-menu routing. |
 | `./scripts/test-tree.sh` | Core moves/reordering, inheritance, draft preservation, cycle rejection, and Postman round trips. |
 | `./scripts/test-find.sh` | Both native Find bars, request replacement, read-only response actions, UTF-16/UTF-8 mapping, cross-chunk matches, full-file navigation/wraparound, and queries entered while indexing a 128 MB response. |
 | `PROFILE_FIND=1 ./scripts/test-find.sh` | The Find checks with timing and peak-memory measurements. |
@@ -141,7 +143,7 @@ XCTest equivalents are in `Tests/RelayCoreTests` for environments with a working
 
 Native AppKit checks require access to the macOS window server. A process abort in `RegisterApplication` before assertions run can indicate a sandbox/window-server restriction; inspect diagnostics and distinguish it from an application assertion failure. Core HTTP checks also require localhost network access.
 
-The native Find tests and interactive Find share macOS's Find pasteboard. Do not run them concurrently. Clipboard-related checks preserve and restore pasteboard contents on normal completion; a crashed runner may not execute cleanup.
+The native Find tests and interactive Find share macOS's Find pasteboard. Sidebar, lifecycle, and copy-body checks share the general pasteboard and key-window focus. Run these interactive checks separately. Clipboard-related checks preserve and restore pasteboard contents on normal completion; a crashed runner may not execute cleanup.
 
 ### Visual checks and isolated workspaces
 
@@ -168,6 +170,14 @@ Preserve request/node identity during moves. `CollectionTree.move` adjusts inser
 `HistoryEntry` wraps history dictionaries in `NSObject` for the native outline/table data source. Preserve that stable object representation; passing unstable bridged dictionaries previously caused a history-tab crash.
 
 Background jobs use cancellation objects and generation IDs. Cancel work when tabs/files change, and reject stale callbacks before modifying text, selections, response state, or temporary files.
+
+### Closing and quitting
+
+Clean window closes return `true` directly from `windowShouldClose`; never call `performClose` recursively from that delegate callback. Dirty closes confirm each draft, then close after the sheet completion has unwound. Cancel resets the confirmation state and leaves the window open. The workspace window schedules Quit after closing, including when auxiliary windows remain; automatic last-window termination is disabled to avoid two competing quit requests.
+
+The application delegate returns `terminateLater`, then uses `afterAppKitEvent` to continue confirmation and persistence in both normal and AppKit modal run-loop modes. `terminateLater` changes the active mode; ordinary main-queue continuations can stall the quit flow. The helper also wakes the main run loop for background save completion. Do not reply to termination before the delegate returns or start another confirmation while a sheet owns the close flow.
+
+Final persistence uses `Workspace.save(completion:)`: snapshot on the main thread, encode/write on the serial utility queue, then reply to termination after the write finishes. Do not synchronously write the workspace in `windowWillClose` or repeat that write in `applicationWillTerminate`. Hide approved windows promptly while the final write completes, and preserve sample data in lifecycle tests rather than using the real workspace.
 
 ## Large payloads and native Find
 
@@ -208,7 +218,7 @@ References: [Postman Collection v2.1 schema](https://schema.postman.com/json/col
 Normal storage remains `~/Library/Application Support/Postauomo/workspace.json`. If that directory is absent and legacy `Relay` storage exists, `Workspace` copies it to the newer location and falls back to legacy storage if copying fails. Keep this migration behavior intact.
 
 - Workspace snapshots contain collections, environments, selected environment, and the latest **100** history entries.
-- Saves are atomic, serialized on a utility queue, and normally debounced by **0.4 seconds**. Immediate saves flush through that queue.
+- Saves are atomic, serialized on a utility queue, and normally debounced by **0.4 seconds**. `save(now: true)` synchronously flushes through that queue for explicit callers; `save(completion:)` queues an immediate asynchronous write and is required for shutdown.
 - The workspace file uses permissions **0600**, and the workspace directory is created with **0700** permissions.
 - Environment values and credentials are stored locally in JSON, including exports. There is no Keychain-backed secret store; do not describe these values as encrypted.
 - Responses live under the workspace's `Responses` directory and are session-scoped. They are retained while tabs need them and cleared during the next workspace initialization. History does not retain response bodies.
@@ -222,16 +232,21 @@ The current design is **flat**, with solid fills and rounded capsule controls. E
 
 - Reuse `RelayButton`, `RelayPopup`, `RelaySegments`, shared inputs, `ControlSurface`, and `PairEditor` rather than creating per-screen variants.
 - Common controls are **28 pt** high with **14 pt** capsule radii and **8 pt** vertical gaps. Maintain consistent inset/gap relationships within each band.
-- Alternate `bandLightColor` and `bandDarkColor` for major vertical sections. Ordinary horizontal separator rules were removed; thin draggable split dividers remain.
+- The main window uses a native unified `NSToolbar`, a hidden window title, and a transparent title bar over `bandDarkColor`. Keep AppKit's standard window buttons, drag region, and full-screen behavior. Toolbar actions are flat custom views with native item borders disabled: New request, New collection, Save, and the environment controls. Host each item's custom view in a neutral `NSView` so AppKit does not replace the shared button bezels. The sidebar starts with Collections/History and search, without the logo/name block.
+- Alternate `bandLightColor` and `bandDarkColor` for major vertical sections. Request tabs use `bandDarkColor` above the lighter request controls, following the same band pattern. Both thin draggable split dividers use `ResizeSplitView` and `controlFillColor`, matching buttons/dropdowns in either appearance. Full-width one-point dividers below the toolbar and above the shared footer use the same fill; keep ordinary section boundaries free of extra separator rules.
 - Buttons use text or an icon, not both. Primary Send text is opaque white. Keep keyboard behavior, focus rings, tooltips, and accessibility labels intact.
 - Request tabs contain full method names, a request title, a dirty dot when needed, and an internal close button. Rename through the context menu; do not restore the separate rename bar.
+- `RequestTabScrollView` maps the dominant wheel/trackpad axis to horizontal movement, retaining precise deltas and momentum events. Its clip view locks vertical position, both elasticities are disabled, and the horizontal scrollbar overlays the strip so it cannot clip the 28 pt tabs. Preserve this behavior when revealing a selected tab or resizing the window.
 - Body is the first/default request section. Body-format popups must fit every title without truncation.
 - JSON editors have no border and share `inputBackgroundColor` with text inputs.
+- Light mode distinguishes surfaces through flat fills: white editing surfaces, pale-gray content bands, darker-gray chrome, and medium-gray controls. Keep controls borderless; do not add capsule outlines to increase contrast. Use the darker light-mode method/syntax inks and `primaryFillColor` for readable white Send text; retain the dark-mode palette. Secondary button titles use explicit semantic text colors, including disabled state, so toolbar text stays legible.
 - Keep text and placeholders vertically centered before and after focus. Table value fields and row actions must remain within the viewport at narrow sizes.
 - `PairEditor` owns shared row addition/removal: a small plus button at the top right, inline trash buttons, and focus of a newly added row. Toggling enabled state must not add rows. Preserve empty-table behavior and last-row deletion.
 - Table headers have no vertical separators. Environment tables match their surrounding window background.
 - Collection/folder names toggle expansion along with disclosure arrows. Do not add folder icons back to the tree. Keep sidebar segments fitted to their contents, with vertically centered selected rows.
+- Tree editing follows the native responder chain: ⌘C/⌘X/⌘V for copy/cut/paste, ⌘Delete for confirmed deletion, ⌘D for duplicate, and Return for rename. Text inputs retain their own editing shortcuts. Copy/paste generates fresh identities and preserves Postman metadata; Cut defers removal until a valid Paste and preserves open drafts/inheritance on moves. Reject folder cycles, invalidate cut intent when the pasteboard changes, and restore tree focus after mutations. Deletion closes affected saved-request tabs and explicitly warns before discarding dirty drafts.
 - One shared footer holds import/export actions. Avoid collection/request counters, paging controls, and redundant response-format labels.
+- Center the response placeholder artwork, title, and wrapped message as one group. Use the open empty mailbox (`ResponseEmpty.png`) before sending, and the fallen postman (`ResponseError.png`) for transport/validation errors. Hide artwork while receiving; actual HTTP responses, including error statuses, retain their response body. Do not restore shortcut hints below the placeholder. Let the artwork shrink when the response pane is short, and keep full error text available as a tooltip.
 - **Copy body** provides a visible, accessible “Copied!” confirmation for approximately **2.5 seconds**, rather than only a momentary button state change.
 - Sidebar width is remembered. Both sidebar/main and request/response splits must remain draggable.
 
@@ -242,10 +257,11 @@ Native menu shortcuts include ⌘N (new request), ⌘S (save), ⌘Return (send),
 The approved logo is a cartoon postman's face and gloved hand holding a letter. Preserve the matte blue cap, large mustache, clean cheek, and separation between the mustache and envelope. Use the approved assets rather than generating a replacement during unrelated work.
 
 - `Resources/IconMaster.png`: approved face-and-letter master.
-- `Resources/Logo.png`: transparent sidebar/header artwork, displayed at 40 pt in the app.
+- `Resources/Logo.png`: approved transparent brand artwork, retained as a resource; the main sidebar no longer displays a logo/name block.
 - `Resources/DockIcon.png`: 1024 px square source for the Dock icon.
 - `Resources/PostinoFace.icns`: active multiresolution app icon declared in `Info.plist`.
 - `Resources/DockIcon.prompt.md`: logo-generation/design notes.
+- `Resources/ResponseEmpty.png`, `Resources/ResponseError.png`: transparent response-state illustrations; generated with the built-in imagegen tool. Prompts are retained in `Resources/ResponseIllustrations.prompt.md`. Package both in the app and UI-check bundle.
 
 Run `./scripts/build-icon.sh` to regenerate all standard/Retina icon representations from 16–1024 px. macOS 26 icon services apply the system mask, margins, and material. About loads the multiresolution icon directly. Validate the actual Dock result when changing artwork or packaging; a cached old icon or a low-resolution representation can differ from the resource preview.
 

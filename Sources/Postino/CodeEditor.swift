@@ -162,7 +162,7 @@ final class CodeEditor: NSView, NSTextViewDelegate {
                 self.clearHighlight()
                 for token in tokens {
                     let color: NSColor
-                    switch token.kind { case .key: color = .systemBlue; case .string: color = .systemGreen; case .number: color = .systemOrange; case .literal: color = .systemPurple }
+                    switch token.kind { case .key: color = syntaxKeyColor; case .string: color = syntaxStringColor; case .number: color = syntaxNumberColor; case .literal: color = syntaxLiteralColor }
                     manager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: token.range)
                 }
                 self.painted = range

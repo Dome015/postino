@@ -3,6 +3,8 @@ import RelayCore
 let accent = NSColor(srgbRed: 0, green: 183.0 / 255, blue: 115.0 / 255, alpha: 1)
 let accentInk = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? accent : NSColor(srgbRed: 0, green: 0.40, blue: 0.25, alpha: 1) }
 let primaryInk = NSColor(srgbRed: 0.02, green: 0.12, blue: 0.08, alpha: 1)
+let primaryFillColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? accent : NSColor(srgbRed: 0, green: 0.48, blue: 0.30, alpha: 1) }
+let disabledInk = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .disabledControlTextColor : NSColor(white: 0.40, alpha: 1) }
 func label(_ text: String, size: CGFloat = 13, weight: NSFont.Weight = .regular, color: NSColor = .labelColor) -> NSTextField { let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: size, weight: weight); l.textColor = color; l.lineBreakMode = .byTruncatingTail; return l }
 func stack(_ views: [NSView], vertical: Bool = false, spacing: CGFloat = 8) -> NSStackView { let s = NSStackView(views: views); s.orientation = vertical ? .vertical : .horizontal; s.alignment = vertical ? .leading : .centerY; s.spacing = spacing; s.distribution = .fill; if vertical { for v in views { v.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([v.leadingAnchor.constraint(equalTo: s.leadingAnchor), v.trailingAnchor.constraint(equalTo: s.trailingAnchor)]) } }; return s }
 enum ButtonStyle { case secondary, primary, plain, tab }
@@ -10,7 +12,7 @@ enum ButtonStyle { case secondary, primary, plain, tab }
 final class FlatButtonCell: NSButtonCell {
     override func drawBezel(withFrame frame: NSRect, in controlView: NSView) {
         guard let button = controlView as? RelayButton, button.isBordered else { return }
-        var fill = button.style == .primary ? accent : controlFillColor
+        var fill = button.style == .primary ? primaryFillColor : controlFillColor
         if isHighlighted { fill = fill.blended(withFraction: 0.14, of: .black) ?? fill }
         if !isEnabled { fill = fill.blended(withFraction: 0.45, of: bandLightColor) ?? fill }
         fill.setFill(); NSBezierPath(roundedRect: frame, xRadius: 14, yRadius: 14).fill()
@@ -22,10 +24,10 @@ final class RelayButton: NSButton {
     override var allowsVibrancy: Bool { false }
     override var title: String { didSet { updateTitleInk() } }
     override var font: NSFont? { didSet { updateTitleInk() } }
+    override var isEnabled: Bool { didSet { updateTitleInk() } }
     private func updateTitleInk() {
-        if style == .primary {
-            attributedTitle = NSAttributedString(string: title, attributes: [.font: font ?? NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.white])
-        }
+        let ink: NSColor = style == .primary ? .white : isEnabled ? .labelColor : disabledInk
+        attributedTitle = NSAttributedString(string: title, attributes: [.font: font ?? NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: ink])
     }
     var selected = false { didSet { state = selected ? .on : .off } }
     override init(frame: NSRect) {
@@ -38,7 +40,7 @@ final class RelayButton: NSButton {
     private func applyStyle() {
         isBordered = style != .plain && style != .tab
         bezelStyle = .rounded
-        bezelColor = style == .primary ? accent : nil
+        bezelColor = style == .primary ? primaryFillColor : nil
         contentTintColor = style == .primary ? .white : .labelColor
         updateTitleInk()
         invalidateIntrinsicContentSize(); needsDisplay = true
@@ -51,12 +53,12 @@ final class RelayButton: NSButton {
     }
 }
 func button(_ title: String, symbol: String? = nil, target: AnyObject?, action: Selector) -> RelayButton { let b = RelayButton(frame: .zero); b.title = title; b.target = target; b.action = action; if title.isEmpty, let symbol = symbol { b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title); b.imagePosition = .imageLeading }; return b }
-let bandLightColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.15, alpha: 1) : NSColor(white: 0.96, alpha: 1) }
-let bandDarkColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.12, alpha: 1) : NSColor(white: 0.91, alpha: 1) }
-let controlFillColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.21, alpha: 1) : NSColor(white: 0.85, alpha: 1) }
-let selectedTabColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 0.05, green: 0.27, blue: 0.20, alpha: 1) : NSColor(srgbRed: 0.75, green: 0.90, blue: 0.83, alpha: 1) }
+let bandLightColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.15, alpha: 1) : NSColor(white: 0.93, alpha: 1) }
+let bandDarkColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.12, alpha: 1) : NSColor(white: 0.86, alpha: 1) }
+let controlFillColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.21, alpha: 1) : NSColor(white: 0.76, alpha: 1) }
+let selectedTabColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 0.05, green: 0.27, blue: 0.20, alpha: 1) : NSColor(srgbRed: 0.68, green: 0.85, blue: 0.77, alpha: 1) }
 let canvasColor = bandLightColor
-let inputBackgroundColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.10, alpha: 1) : NSColor(white: 0.98, alpha: 1) }
+let inputBackgroundColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.10, alpha: 1) : NSColor(white: 1, alpha: 1) }
 let editorColor = inputBackgroundColor
 let sidebarColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.105, alpha: 1) : NSColor(white: 0.965, alpha: 1) }
 class Surface: NSView { let color: NSColor; init(_ color: NSColor) { self.color = color; super.init(frame: .zero) }; required init?(coder: NSCoder) { fatalError() }; override func draw(_ dirtyRect: NSRect) { color.setFill(); NSIntersectionRect(bounds, dirtyRect).fill() }; override func viewDidChangeEffectiveAppearance() { needsDisplay = true } }
@@ -67,7 +69,24 @@ func pin(_ child: NSView, in parent: NSView, inset: CGFloat = 0, verticalInset: 
 func rule() -> NSView { let v = NSBox(); v.boxType = .separator; return v }
 func padded(_ view: NSView, x: CGFloat = 10, y: CGFloat = 8) -> NSView { padded(view, x: x, top: y, bottom: y) }
 func padded(_ view: NSView, x: CGFloat = 10, top: CGFloat, bottom: CGFloat) -> NSView { let host = NSView(); view.translatesAutoresizingMaskIntoConstraints = false; host.addSubview(view); NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: x), view.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -x), view.topAnchor.constraint(equalTo: host.topAnchor, constant: top), view.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -bottom)]); return host }
-func methodColor(_ method: String) -> NSColor { switch method { case "GET": return .systemGreen; case "POST": return .systemOrange; case "DELETE": return .systemRed; case "PUT", "PATCH": return .systemBlue; default: return .secondaryLabelColor } }
+func methodColor(_ method: String) -> NSColor {
+    NSColor(name: nil) { appearance in
+        let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        switch method {
+        case "GET": return dark ? .systemGreen : NSColor(srgbRed: 0, green: 0.40, blue: 0.25, alpha: 1)
+        case "POST": return dark ? .systemOrange : NSColor(srgbRed: 0.65, green: 0.30, blue: 0.04, alpha: 1)
+        case "DELETE": return dark ? .systemRed : NSColor(srgbRed: 0.75, green: 0.15, blue: 0.16, alpha: 1)
+        case "PUT", "PATCH": return dark ? .systemBlue : NSColor(srgbRed: 0.08, green: 0.33, blue: 0.70, alpha: 1)
+        default: return .secondaryLabelColor
+        }
+    }
+}
+let syntaxKeyColor = methodColor("PUT")
+let syntaxStringColor = methodColor("GET")
+let syntaxNumberColor = methodColor("POST")
+let syntaxLiteralColor = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .systemPurple : NSColor(srgbRed: 0.49, green: 0.20, blue: 0.66, alpha: 1) }
+let successInk = methodColor("GET")
+let errorInk = methodColor("DELETE")
 /// Native segmented controls keep selection, keyboard navigation, and accessibility consistent.
 final class RelaySegments: NSSegmentedControl {
     init(labels: [String], trackingMode: NSSegmentedControl.SwitchTracking, target: AnyObject?, action: Selector?) {
