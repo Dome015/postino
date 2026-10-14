@@ -30,15 +30,28 @@ jobs:
           print "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
 
       - name: Build Postino
+        env:
+          POSTINO_RELEASE_TAG: postino-${{ github.run_id }}-${{ github.run_attempt }}
         run: ./scripts/build.sh
 
       - name: Check native controls and layout
         run: ./scripts/test-ui.sh
 
+      - name: Check table and body editing
+        run: ./scripts/test-editor.sh
+
+      - name: Check release detection
+        run: ./scripts/test-updates.sh
+
+      - name: Check cURL exports
+        run: ./scripts/test-curl.sh
+
       - name: Verify release bundle
         run: |
           codesign --verify --deep --strict build/Release/Postino.app
           cat build/Release/Postino.app/Contents/Resources/BuildInfo.json
+          /usr/libexec/PlistBuddy -c 'Print :PostinoReleaseTag' build/Release/Postino.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :PostinoBuildDate' build/Release/Postino.app/Contents/Info.plist
 
       - name: Package app
         run: ditto -c -k --sequesterRsrc --keepParent build/Release/Postino.app "Postino-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"

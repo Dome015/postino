@@ -1,4 +1,5 @@
 import AppKit
+import RelayCore
 
 /// Quit with terminateLater runs AppKit's modal loop. Continuations must run in
 /// that mode as well as the normal event loop, including disk-save completions.
@@ -11,11 +12,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var controller: MainWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
         controller = MainWindow(); makeMenu(); controller?.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
+        if !CommandLine.arguments.contains("--demo") { controller?.updateController.startAutomaticChecks() }
+    }
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if !CommandLine.arguments.contains("--demo") { controller?.updateController.checkAutomaticallyIfDue() }
     }
     // The workspace window requests termination after closing, even when an
     // auxiliary environment/About window remains. Avoid a second automatic Quit.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     private var terminationPending = false
+    private var preparedUpdate: PreparedAppUpdate?
+    func restartAfterUpdate(_ update: PreparedAppUpdate) {
+        guard !terminationPending, let controller, !controller.confirmingClose else { update.discard(); return }
+        preparedUpdate = update
+        NSApp.terminate(nil)
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let controller else { return .terminateNow }
         guard !terminationPending else { return .terminateLater }
@@ -28,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.confirmCloseAll { approved in
                 guard approved else {
                     self.terminationPending = false
+                    self.preparedUpdate?.discard(); self.preparedUpdate = nil
                     sender.reply(toApplicationShouldTerminate: false)
                     return
                 }
@@ -36,6 +48,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 controller.window?.orderOut(nil)
                 controller.environmentWindow?.orderOut(nil)
                 controller.store.save {
+                    if let update = self.preparedUpdate {
+                        do { try update.launchHelper() }
+                        catch {
+                            update.discard(); self.preparedUpdate = nil; self.terminationPending = false
+                            controller.closingApproved = false
+                            sender.reply(toApplicationShouldTerminate: false)
+                            controller.showWindow(nil)
+                            controller.showError("Could not restart to install the update. \(error.localizedDescription)")
+                            return
+                        }
+                    }
                     sender.reply(toApplicationShouldTerminate: true)
                 }
             }
@@ -45,10 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func makeMenu() {
         let menu = NSMenu(); NSApp.mainMenu = menu
         let app = NSMenu(); let appItem = NSMenuItem(); appItem.submenu = app; menu.addItem(appItem)
-        app.addItem(withTitle: "About Postino", action: #selector(about), keyEquivalent: "").target = self; app.addItem(.separator()); app.addItem(withTitle: "Hide Postino", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"); app.addItem(withTitle: "Quit Postino", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        app.addItem(withTitle: "About Postino", action: #selector(about), keyEquivalent: "").target = self
+        app.addItem(withTitle: "Check for updates…", action: #selector(MainWindow.checkForUpdates), keyEquivalent: "").target = controller
+        app.addItem(.separator()); app.addItem(withTitle: "Hide Postino", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"); app.addItem(withTitle: "Quit Postino", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let file = NSMenu(title: "File"); let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: ""); fileItem.submenu = file; menu.addItem(fileItem)
         func action(_ title: String, _ selector: Selector, _ key: String, shift: Bool = false) { let i = file.addItem(withTitle: title, action: selector, keyEquivalent: key); i.target = controller; if shift { i.keyEquivalentModifierMask = [.command, .shift] } }
-        action("New Request", #selector(MainWindow.newRequest), "n"); action("New Collection…", #selector(MainWindow.newCollection), "n", shift: true); action("Save Request", #selector(MainWindow.saveRequest), "s"); action("Close Request", #selector(MainWindow.closeCurrentTab), "w"); file.addItem(.separator()); action("Import Postman JSON…", #selector(MainWindow.importFiles), "i"); action("Export Collection…", #selector(MainWindow.exportCollection), "e", shift: true); action("Save Response…", #selector(MainWindow.exportResponse), "s", shift: true); file.addItem(.separator()); action("Manage Environments…", #selector(MainWindow.editEnvironments), "e"); file.items.last?.keyEquivalentModifierMask = [.command, .option]
+        action("New Request", #selector(MainWindow.newRequest), "n"); action("New Collection…", #selector(MainWindow.newCollection), "n", shift: true); action("Save Request", #selector(MainWindow.saveRequest), "s"); action("Copy as cURL", #selector(MainWindow.copyRequestAsCurl), "c", shift: true); action("Close Request", #selector(MainWindow.closeCurrentTab), "w"); file.addItem(.separator()); action("Import Postman JSON…", #selector(MainWindow.importFiles), "i"); action("Export Collection…", #selector(MainWindow.exportCollection), "e", shift: true); action("Save Response…", #selector(MainWindow.exportResponse), "s", shift: true); file.addItem(.separator()); action("Manage Environments…", #selector(MainWindow.editEnvironments), "e"); file.items.last?.keyEquivalentModifierMask = [.command, .option]
         let edit = NSMenu(title: "Edit"); let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: ""); editItem.submenu = edit; menu.addItem(editItem)
         for (title, selector, key) in [("Undo", Selector(("undo:")), "z"), ("Redo", Selector(("redo:")), "Z"), ("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"), ("Paste", #selector(NSText.paste(_:)), "v"), ("Select All", #selector(NSText.selectAll(_:)), "a")] { edit.addItem(withTitle: title, action: selector, keyEquivalent: key) }
         edit.addItem(.separator())

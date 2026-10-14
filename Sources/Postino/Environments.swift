@@ -7,19 +7,48 @@ extension MainWindow {
         let picker = RelayPopup(); compact(picker); picker.identifier = .init("environmentPicker"); picker.addItems(withTitles: store.environments.map(\.name)); picker.target = self; picker.action = #selector(environmentPickerChanged(_:)); picker.widthAnchor.constraint(equalToConstant: 230).isActive = true
         environmentIndex = store.environments.indices.contains(store.selectedEnvironment) ? store.selectedEnvironment : (store.environments.isEmpty ? -1 : 0); if environmentIndex >= 0 { picker.selectItem(at: environmentIndex) }
         let title = label("Environment variables", size: 15, weight: .semibold)
-        let add = button("New environment", symbol: "plus", target: self, action: #selector(addEnvironment)); let export = button("Export…", symbol: "square.and.arrow.up", target: self, action: #selector(exportEnvironment)); let remove = button("Delete environment", symbol: "trash", target: self, action: #selector(deleteEnvironment))
+        let add = button("New", symbol: "plus", target: self, action: #selector(addEnvironment))
+        let duplicate = button("Duplicate", target: self, action: #selector(duplicateEnvironment)); duplicate.identifier = .init("duplicateEnvironment")
+        let export = button("Export…", symbol: "square.and.arrow.up", target: self, action: #selector(exportEnvironment)); let remove = button("Delete environment", symbol: "trash", target: self, action: #selector(deleteEnvironment))
         let field = InputField(); field.placeholderString = "Environment name"; field.setAccessibilityLabel("Environment name"); envName = field
         let editor = PairEditor(configuration: .environment); environmentEditor = editor; editor.changed = { [weak self] rows in guard let self = self, self.store.environments.indices.contains(self.environmentIndex) else { return }; self.store.environments[self.environmentIndex].values = rows; self.store.save() }
         let help = label("Reference enabled variables with {{variable_name}}.", size: 12, color: .secondaryLabelColor)
         let done = button("Done", target: self, action: #selector(closeEnvironmentEditor)); done.keyEquivalent = "\r"
-        let layout = stack([padded(stack([title, spacer(), done]), x: 10, top: 8, bottom: 0), padded(stack([picker, add, spacer(), export, remove]), x: 10, top: 8, bottom: 0), padded(stack([label("Environment name", size: 12), field]), x: 10, top: 8, bottom: 0), padded(help, x: 10, y: 8), editor], vertical: true, spacing: 0); layout.alignment = .width; pin(layout, in: w.contentView!); updateEnvironmentEditor(); w.center(); w.makeKeyAndOrderFront(nil)
+        let layout = stack([padded(stack([title, spacer(), done]), x: 10, top: 8, bottom: 0), padded(stack([picker, add, duplicate, spacer(), export, remove]), x: 10, top: 8, bottom: 0), padded(stack([label("Environment name", size: 12), field]), x: 10, top: 8, bottom: 0), padded(help, x: 10, y: 8), editor], vertical: true, spacing: 0); layout.alignment = .width; pin(layout, in: w.contentView!); updateEnvironmentEditor(); w.center(); w.makeKeyAndOrderFront(nil)
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak self] _ in self?.commitEnvironment(); self?.environmentWindow = nil; self?.environmentEditor = nil }
     }
     func environmentPicker() -> NSPopUpButton? { func find(_ v: NSView) -> NSPopUpButton? { if v.identifier?.rawValue == "environmentPicker" { return v as? NSPopUpButton }; for child in v.subviews { if let p = find(child) { return p } }; return nil }; return environmentWindow?.contentView.flatMap(find) }
     func commitEnvironment() { environmentWindow?.makeFirstResponder(nil); if store.environments.indices.contains(environmentIndex), let name = envName?.stringValue, !name.isEmpty { store.environments[environmentIndex].name = name }; store.save(); refreshEnvironments() }
-    func updateEnvironmentEditor() { if store.environments.indices.contains(environmentIndex) { let e = store.environments[environmentIndex]; envName?.stringValue = e.name; environmentEditor?.rows = e.values; envName?.isEnabled = true; environmentEditor?.isHidden = false } else { envName?.stringValue = ""; envName?.isEnabled = false; environmentEditor?.isHidden = true }; let p = environmentPicker(); p?.removeAllItems(); p?.addItems(withTitles: store.environments.map(\.name)); if environmentIndex >= 0 { p?.selectItem(at: environmentIndex) } }
+    func updateEnvironmentEditor() {
+        let valid = store.environments.indices.contains(environmentIndex)
+        if valid { let e = store.environments[environmentIndex]; envName?.stringValue = e.name; environmentEditor?.rows = e.values; envName?.isEnabled = true; environmentEditor?.isHidden = false }
+        else { envName?.stringValue = ""; envName?.isEnabled = false; environmentEditor?.isHidden = true }
+        func updateButtons(_ view: NSView) {
+            if let button = view as? NSButton, button.identifier?.rawValue == "duplicateEnvironment" { button.isEnabled = valid }
+            view.subviews.forEach(updateButtons)
+        }
+        if let content = environmentWindow?.contentView { updateButtons(content) }
+        let p = environmentPicker(); p?.removeAllItems(); p?.addItems(withTitles: store.environments.map(\.name)); if environmentIndex >= 0 { p?.selectItem(at: environmentIndex) }
+    }
     @objc func environmentPickerChanged(_ sender: NSPopUpButton) { let nextIndex = sender.indexOfSelectedItem; commitEnvironment(); environmentIndex = nextIndex; updateEnvironmentEditor() }
     @objc func addEnvironment() { commitEnvironment(); store.environments.append(try! Environment(json: ["name": "New environment", "values": [JSON]()])); environmentIndex = store.environments.count - 1; updateEnvironmentEditor(); refreshEnvironments(); store.save(); environmentWindow?.makeFirstResponder(envName) }
+    @objc func duplicateEnvironment() {
+        commitEnvironment(); guard store.environments.indices.contains(environmentIndex) else { return }
+        do {
+            let source = store.environments[environmentIndex]
+            var sourceJSON = source.original; sourceJSON["name"] = source.name; sourceJSON["values"] = source.values.map(\.json)
+            var json = try Postman.read(Postman.encode(sourceJSON))
+            var name = source.name + " (copy)", suffix = 2
+            while store.environments.contains(where: { $0.name == name }) { name = source.name + " (copy \(suffix))"; suffix += 1 }
+            json["name"] = name; json["id"] = UUID().uuidString
+            if json["_postman_id"] != nil { json["_postman_id"] = UUID().uuidString }
+            let copy = try Environment(json: json)
+            store.environments.insert(copy, at: environmentIndex + 1); environmentIndex += 1
+            // Inserting before the active environment must not change its identity.
+            if store.selectedEnvironment >= environmentIndex { store.selectedEnvironment += 1 }
+            updateEnvironmentEditor(); refreshEnvironments(); store.save()
+        } catch { showError(error.localizedDescription) }
+    }
     @objc func exportEnvironment() { commitEnvironment(); guard store.environments.indices.contains(environmentIndex) else { return }; let e = store.environments[environmentIndex]; let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = e.name + ".postman_environment.json"; panel.beginSheetModal(for: environmentWindow!) { [weak self] result in guard result == .OK, let url = panel.url else { return }; do { try Postman.encode(e.exported).write(to: url, options: .atomic) } catch { self?.showError(error.localizedDescription) } } }
     @objc func deleteEnvironment() { commitEnvironment(); guard store.environments.indices.contains(environmentIndex) else { return }; let index = environmentIndex; let alert = NSAlert(); alert.messageText = "Delete \(store.environments[index].name)?"; alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel"); alert.beginSheetModal(for: environmentWindow!) { [weak self] result in guard result == .alertFirstButtonReturn, let self = self else { return }; self.store.environments.remove(at: index); if self.store.selectedEnvironment == index { self.store.selectedEnvironment = -1 } else if self.store.selectedEnvironment > index { self.store.selectedEnvironment -= 1 }; self.environmentIndex = self.store.environments.isEmpty ? -1 : min(index, self.store.environments.count - 1); self.updateEnvironmentEditor(); self.refreshEnvironments(); self.store.save() } }
     @objc func closeEnvironmentEditor() { commitEnvironment(); environmentWindow?.close(); environmentWindow = nil }

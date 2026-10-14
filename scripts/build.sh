@@ -31,9 +31,19 @@ for binary in "$APP/Contents/MacOS/Postino" "$APP/Contents/Frameworks/libRelayCo
     fi
 done
 cp Info.plist "$APP/Contents/Info.plist"
+# Build identity is independent of the human-readable GitHub release title.
+/usr/libexec/PlistBuddy -c "Add :PostinoBuildDate string $(date -u +%Y-%m-%dT%H:%M:%SZ)" "$APP/Contents/Info.plist"
+if [[ -n "${POSTINO_RELEASE_TAG:-}" ]]; then
+    if [[ ! "$POSTINO_RELEASE_TAG" =~ '^postino-[0-9]+-[0-9]+$' ]]; then
+        print -u2 "POSTINO_RELEASE_TAG must match postino-<run-id>-<attempt>."
+        exit 1
+    fi
+    /usr/libexec/PlistBuddy -c "Add :PostinoReleaseTag string $POSTINO_RELEASE_TAG" "$APP/Contents/Info.plist"
+fi
 printf '{"sdk":"%s","swift":"%s","architecture":"%s","deploymentTarget":"13.0"}\n' "$SDK_VERSION" "$SWIFT_VERSION" "$ARCH" > "$APP/Contents/Resources/BuildInfo.json"
 if [[ -f Resources/Logo.png ]]; then cp Resources/Logo.png "$APP/Contents/Resources/"; fi
-cp Resources/ResponseEmpty.png Resources/ResponseError.png "$APP/Contents/Resources/"
+cp Resources/ResponseEmpty.png Resources/ResponseError.png Resources/WorkspaceEmpty.png "$APP/Contents/Resources/"
+cp Resources/InstallUpdate.sh "$APP/Contents/Resources/"
 if [[ -f Resources/DockIcon.png ]]; then cp Resources/DockIcon.png "$APP/Contents/Resources/"; fi
 if [[ -f Resources/PostinoFace.icns ]]; then cp Resources/PostinoFace.icns "$APP/Contents/Resources/"; fi
 rm -f "$APP/Contents/Resources/AppIcon.icns" "$APP/Contents/Resources/PostinoIcon.icns" "$APP/Contents/Resources/PostinoMacIcon.icns" "$APP/Contents/Resources/PostinoDock.icns"

@@ -7,16 +7,34 @@ final class HistoryEntry: NSObject {
     init(_ json: JSON) { self.json = json }
 }
 final class RequestTab {
-    let draft: RequestDraft; var request: RequestItem { draft.request }; var response: HTTPResult?; var transfer: HTTPTransfer?; var prettyFile: URL?; var error: String?; var generation = UUID(); var workCancellation = WorkCancellation(); var formatting = false; var destination: CollectionContainer?
+    let draft: RequestDraft; var request: RequestItem { draft.request }; var response: HTTPResult?; var transfer: HTTPTransfer?; var prettyFile: URL?; var error: String?; var generation = UUID(); var workCancellation = WorkCancellation(); var formatting = false; var historySourceRequestID: String?; var historyCollection: Collection?
     func resetWork() { workCancellation.cancel(); workCancellation = WorkCancellation(); generation = UUID(); formatting = false }
-    init(_ request: RequestItem, saved: Bool = true) { draft = RequestDraft(request, saved: saved) }
+    init(_ request: RequestItem, saved: Bool = true, ephemeral: Bool = false) { draft = RequestDraft(request, saved: saved, ephemeral: ephemeral) }
 }
-final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSMenuDelegate, NSToolbarDelegate {
+final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSMenuDelegate, NSToolbarDelegate, NSMenuItemValidation {
     let store = Workspace(); var tabs: [RequestTab] = []; var current: RequestTab?; var sidebarMode = 0; var selectedCollection: Collection?
     let outline = CollectionOutlineView(); let search = InputSearchField(); let env = RelayPopup(); let method = RelayPopup(); let url = InputField(); let send = RelayButton(frame: .zero); let tabBar = NSView(); let tabScroll = RequestTabScrollView(); let save = RelayButton(frame: .zero)
+    let editorWorkspace = NSView(); let emptyWorkspace = Surface(bandLightColor)
+    let workspaceIllustration = NSImageView()
+    let workspaceTitle = NSTextField(wrappingLabelWithString: "Welcome!")
+    let workspaceMessage = NSTextField(wrappingLabelWithString: "Create or open a request to get started.")
+    let workspaceNewRequest = RelayButton(frame: .zero)
+    let readyIllustration = Bundle.main.url(forResource: "WorkspaceEmpty", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
     let sidebarSplit = NSSplitViewController()
+    let sidebarSegment = RelaySegments(labels: ["Collections", "History"], trackingMode: .selectOne, target: nil, action: nil)
     private var windowToolbarItems: [NSToolbarItem] = []
+    lazy var updateController = AppUpdateController(window: window, canPresent: { [weak self] in
+        guard let self else { return false }
+        return !self.confirmingClose && !self.closingApproved
+    }, stateChanged: { _ in }, restart: { update in
+        guard let delegate = NSApp.delegate as? AppDelegate else { update.discard(); return }
+        delegate.restartAfterUpdate(update)
+    })
     let requestSegment = RelaySegments(labels: ["Body", "Params", "Headers", "Authorization"], trackingMode: .selectOne, target: nil, action: nil)
+    let requestOptions = NSStackView()
+    let copyRequest = RelayButton(frame: .zero)
+    var copyingRequest = false
+    var copyRequestFeedbackReset: DispatchWorkItem?
     let responseSegment = RelaySegments(labels: ["Body", "Headers"], trackingMode: .selectOne, target: nil, action: nil)
     let params = PairEditor(configuration: .parameters); let headers = PairEditor(configuration: .headers); let form = PairEditor(configuration: .form); let body = CodeEditor(editable: true); let response = CodeEditor(editable: false)
     let emptyResponse = Surface(bandLightColor); let emptyTitle = NSTextField(wrappingLabelWithString: "Send your first request"); let emptyMessage = NSTextField(wrappingLabelWithString: "The response will appear here.")
@@ -28,7 +46,7 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     let chooseFile = RelayButton(frame: .zero); let pretty = RelayButton(frame: .zero); let saveResponse = RelayButton(frame: .zero); let copyResponse = RelayButton(frame: .zero); var copyingResponse = false; var copyFeedbackReset: DispatchWorkItem?; let responseFind = RelayButton(frame: .zero); let requestHint = label("", size: 11, color: .secondaryLabelColor)
     var sidebarDragNode: CollectionNode?; var sidebarDragToken: String?
     var sidebarCutItem: AnyObject?; var sidebarCutChangeCount: Int?
-    var collapsedFolders = Set<ObjectIdentifier>(); var restoringTree = false; var closingApproved = false; var confirmingClose = false
+    var expandedFolders = Set<ObjectIdentifier>(); var restoringTree = false; var closingApproved = false; var confirmingClose = false
     var updating = false; var filtered: [Any] = []; var environmentWindow: NSWindow?; var environmentEditor: PairEditor?; var envName: NSTextField?; var environmentIndex = -1
     lazy var responseReader = ResponseReader(response)
     let worker = DispatchQueue(label: "relay.response", qos: .userInitiated, attributes: .concurrent)
@@ -38,7 +56,7 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         w.minSize = NSSize(width: 980, height: 700); w.setFrameAutosaveName("PostauomoMain"); if let screen = NSScreen.main { var f = w.frame; f.size.width = min(f.width, screen.visibleFrame.width - 32); f.size.height = min(f.height, screen.visibleFrame.height - 32); w.setFrame(f, display: false) }; w.center()
         super.init(window: w); w.delegate = self
         build(); refreshEnvironments(); reloadSidebar()
-        if let first = store.collections.first?.allRequests.first { open(first) } else { newRequest() }
+        displayCurrent()
     }
     required init?(coder: NSCoder) { fatalError() }
     func build() {
@@ -55,13 +73,14 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         let mainItem = NSSplitViewItem(viewController: mainController); mainItem.minimumThickness = 620
         sidebarSplit.addSplitViewItem(sidebarItem); sidebarSplit.addSplitViewItem(mainItem)
         split.autosaveName = "PostauomoSidebarWidth"
-        let sidebarSegment = RelaySegments(labels: ["Collections", "History"], trackingMode: .selectOne, target: self, action: #selector(sidebarSegmentChanged(_:))); sidebarSegment.selectedSegment = 0; compact(sidebarSegment); sidebarSegment.font = .systemFont(ofSize: 12)
+        sidebarSegment.target = self; sidebarSegment.action = #selector(sidebarSegmentChanged(_:)); sidebarSegment.selectedSegment = 0; compact(sidebarSegment); sidebarSegment.font = .systemFont(ofSize: 12)
         search.placeholderString = "Filter requests"; search.delegate = self; search.setAccessibilityLabel("Filter collections and requests")
         let column = NSTableColumn(identifier: .init("name")); column.width = 220; column.minWidth = 100; column.resizingMask = .autoresizingMask; outline.addTableColumn(column); outline.outlineTableColumn = column; outline.headerView = nil; outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle; outline.rowHeight = 26; outline.delegate = self; outline.dataSource = self; outline.autoresizingMask = [.width]; outline.style = .sourceList; outline.indentationPerLevel = 14; outline.intercellSpacing = NSSize(width: 0, height: 0); outline.backgroundColor = bandDarkColor; outline.target = self; outline.action = #selector(sidebarSelected); outline.setAccessibilityLabel("Collections and requests")
         configureCollectionTree()
         let sidebarScroll = NSScrollView(); sidebarScroll.documentView = outline; sidebarScroll.hasVerticalScroller = true; sidebarScroll.autohidesScrollers = true; sidebarScroll.drawsBackground = false
         let filters = stack([stack([sidebarSegment, spacer()], spacing: 0), search], vertical: true, spacing: 8); filters.alignment = .width
-        let top = band(padded(filters, x: 10, y: 8), color: bandDarkColor, name: "sidebarHeaderBand")
+        // Source-list styling already supplies padding above the first tree row.
+        let top = band(padded(filters, x: 10, top: 8, bottom: 0), color: bandDarkColor, name: "sidebarHeaderBand")
         let importButton = button("Import", symbol: "square.and.arrow.down", target: self, action: #selector(importFiles)); importButton.toolTip = "Import Postman collection or environment JSON (⌘I)"
         let exportButton = button("Export", symbol: "square.and.arrow.up", target: self, action: #selector(exportCollection)); exportButton.toolTip = "Export the selected collection as Postman v2.1 JSON (⇧⌘E)"
         let sideLayout = stack([top, sidebarScroll], vertical: true, spacing: 0); sideLayout.alignment = .width; pin(sideLayout, in: sidebar)
@@ -72,7 +91,7 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         save.title = "Save"; save.target = self; save.action = #selector(saveRequest); save.toolTip = "Save request (⌘S)"
         let environmentControls = stack([env, envEdit], spacing: 6)
         environmentControls.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        for (name, title, view) in [("newRequest", "New request", add as NSView), ("newCollection", "New collection", newCollectionButton as NSView), ("saveRequest", "Save", save as NSView), ("environment", "Active environment", environmentControls as NSView)] {
+        for (name, title, view) in [("newRequest", "New request", add as NSView), ("newCollection", "New collection", newCollectionButton as NSView), ("environment", "Active environment", environmentControls as NSView)] {
             let item = NSToolbarItem(itemIdentifier: .init("Postino." + name))
             // A neutral host preserves the shared button cell instead of adopting toolbar bezels.
             item.label = title; item.paletteLabel = title; item.view = padded(view, x: 0, y: 0); item.isBordered = false; item.autovalidates = false
@@ -86,17 +105,26 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         method.addItems(withTitles: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]); method.target = self; method.action = #selector(methodChanged); compact(method); method.font = .monospacedSystemFont(ofSize: 12, weight: .semibold); method.widthAnchor.constraint(equalToConstant: 90).isActive = true; method.setAccessibilityLabel("HTTP method")
         url.font = .monospacedSystemFont(ofSize: 13, weight: .regular); url.placeholderString = "https://api.example.com/v1/resource"; url.delegate = self; url.setAccessibilityLabel("Request URL");
         send.title = "Send"; send.target = self; send.action = #selector(sendRequest); send.style = .primary; send.keyEquivalent = "\r"; send.keyEquivalentModifierMask = .command; send.font = .systemFont(ofSize: 12, weight: .semibold); send.widthAnchor.constraint(equalToConstant: 80).isActive = true; send.toolTip = "Send request (⌘Return) · click again to cancel"
-        let urlControls = stack([method, url, send], spacing: 8); urlControls.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        save.widthAnchor.constraint(equalToConstant: 60).isActive = true
+        let urlControls = stack([method, url, send, save], spacing: 8); urlControls.heightAnchor.constraint(equalToConstant: 28).isActive = true
         requestSegment.selectedSegment = 0; requestSegment.target = self; requestSegment.action = #selector(requestSectionChanged); compact(requestSegment); requestSegment.font = .systemFont(ofSize: 12)
-        let segmentRow = stack([requestSegment, spacer(), requestHint]); segmentRow.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        copyRequest.title = "Copy as cURL"; copyRequest.target = self; copyRequest.action = #selector(copyRequestAsCurl)
+        copyRequest.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        copyRequest.toolTip = "Copy this request as a cURL command using the selected environment (⇧⌘C)"
+        copyRequest.setAccessibilityLabel("Copy request as cURL")
+        requestHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); requestHint.lineBreakMode = .byTruncatingTail
+        bodyMode.addItems(withTitles: ["JSON / raw text", "URL-encoded form", "Binary file", "Multipart form"]); compact(bodyMode); bodyMode.target = self; bodyMode.action = #selector(bodyModeChanged); bodyMode.setAccessibilityLabel("Request body format"); bodyMode.widthAnchor.constraint(greaterThanOrEqualToConstant: 184).isActive = true
+        authMode.addItems(withTitles: ["Inherit from collection", "No authentication", "Bearer token", "Basic authentication", "API key", "Imported (preserved)"]); compact(authMode); authMode.target = self; authMode.action = #selector(authModeChanged); authMode.widthAnchor.constraint(lessThanOrEqualToConstant: 200).isActive = true
+        requestOptions.orientation = .horizontal; requestOptions.alignment = .centerY; requestOptions.spacing = 0; requestOptions.detachesHiddenViews = true; requestOptions.identifier = .init("requestSectionOptions")
+        requestOptions.addArrangedSubview(padded(bodyMode, x: 0, y: 0)); requestOptions.addArrangedSubview(padded(authMode, x: 0, y: 0))
+        let segmentRow = stack([requestSegment, requestOptions, requestHint, spacer(), copyRequest]); segmentRow.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let requestControls = band(padded(stack([urlControls, segmentRow], vertical: true, spacing: 8), x: 10, y: 8), color: bandLightColor, name: "requestControlsBand")
         params.changed = { [weak self] rows in self?.current?.request.params = rows; self?.updateURLFromParams(); self?.draftChanged() }; headers.changed = { [weak self] rows in self?.current?.request.headers = rows; self?.draftChanged() }; form.changed = { [weak self] rows in self?.current?.request.form = rows; self?.draftChanged() }; body.changed = { [weak self] value in self?.current?.request.body = value; self?.draftChanged() }
-        bodyMode.addItems(withTitles: ["JSON / raw text", "URL-encoded form", "Binary file", "Multipart form"]); compact(bodyMode); bodyMode.target = self; bodyMode.action = #selector(bodyModeChanged); bodyMode.setAccessibilityLabel("Request body format"); bodyMode.widthAnchor.constraint(greaterThanOrEqualToConstant: 184).isActive = true
-        chooseFile.title = "Choose file…"; chooseFile.target = self; chooseFile.action = #selector(chooseBodyFile); let bodyToolbar = padded(stack([bodyMode, chooseFile, spacer()]), x: 10, top: 8, bottom: 0)
-        let bodyLayout = stack([bodyToolbar, bodyHost], vertical: true, spacing: 0); bodyLayout.alignment = .width
-        authMode.addItems(withTitles: ["Inherit from collection", "No authentication", "Bearer token", "Basic authentication", "API key", "Imported (preserved)"]); compact(authMode); authMode.target = self; authMode.action = #selector(authModeChanged); authFields.secret = true
+        chooseFile.title = "Choose file…"; chooseFile.target = self; chooseFile.action = #selector(chooseBodyFile)
+        let bodyLayout = NSView(); pin(bodyHost, in: bodyLayout)
+        authFields.secret = true
         authFields.changed = { [weak self] rows in guard let self = self, let r = self.current?.request, let type = r.auth?["type"] as? String else { return }; r.auth?[type] = rows.map(\.json); self.draftChanged() }
-        let authLayout = stack([padded(stack([authMode, spacer()]), x: 10, y: 8), authFields], vertical: true, spacing: 0); authLayout.alignment = .width
+        let authLayout = NSView(); pin(authFields, in: authLayout)
         for child in [bodyLayout, params, headers, authLayout] { pin(child, in: requestHost); child.isHidden = true }
         requestHost.identifier = .init("requestHost")
         let requestPanel = stack([requestControls, requestHost], vertical: true, spacing: 0); requestPanel.alignment = .width; requestPanel.heightAnchor.constraint(greaterThanOrEqualToConstant: 208).isActive = true
@@ -145,21 +173,60 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         let verticalSplit = ResizeSplitView(); verticalSplit.isVertical = false; verticalSplit.dividerStyle = .thin; verticalSplit.addArrangedSubview(requestPanel); verticalSplit.addArrangedSubview(responsePanel)
         verticalSplit.setContentHuggingPriority(.init(1), for: .vertical)
         verticalSplit.setContentCompressionResistancePriority(.init(1), for: .vertical)
-        let mainLayout = stack([tabScroll, verticalSplit], vertical: true, spacing: 0); mainLayout.alignment = .width; pin(mainLayout, in: main)
+        let mainLayout = stack([tabScroll, verticalSplit], vertical: true, spacing: 0); mainLayout.alignment = .width; pin(mainLayout, in: editorWorkspace)
+        pin(editorWorkspace, in: main); pin(emptyWorkspace, in: main)
+        buildEmptyWorkspace()
         split.setContentHuggingPriority(.init(1), for: .vertical)
         let toolbarDivider = Surface(controlFillColor); toolbarDivider.identifier = .init("toolbarDivider"); toolbarDivider.heightAnchor.constraint(equalToConstant: 1).isActive = true
         let footerDivider = Surface(controlFillColor); footerDivider.identifier = .init("footerDivider"); footerDivider.heightAnchor.constraint(equalToConstant: 1).isActive = true
         let rootLayout = stack([toolbarDivider, split, footerDivider, sharedFooter], vertical: true, spacing: 0); rootLayout.alignment = .width; pin(rootLayout, in: root)
         DispatchQueue.main.async { verticalSplit.setPosition(278, ofDividerAt: 0) }
     }
+    func buildEmptyWorkspace() {
+        emptyWorkspace.identifier = .init("emptyWorkspace")
+        workspaceIllustration.image = readyIllustration; workspaceIllustration.imageScaling = .scaleProportionallyDown
+        workspaceIllustration.imageAlignment = .alignCenter; workspaceIllustration.setAccessibilityElement(false)
+        workspaceIllustration.setContentCompressionResistancePriority(.init(1), for: .vertical)
+        workspaceIllustration.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        workspaceTitle.font = emptyTitle.font; workspaceTitle.textColor = emptyTitle.textColor; workspaceTitle.maximumNumberOfLines = emptyTitle.maximumNumberOfLines
+        workspaceMessage.font = emptyMessage.font; workspaceMessage.textColor = emptyMessage.textColor; workspaceMessage.maximumNumberOfLines = emptyMessage.maximumNumberOfLines
+        for text in [workspaceTitle, workspaceMessage] { text.alignment = .center; text.lineBreakMode = .byWordWrapping; text.setContentHuggingPriority(.init(1), for: .horizontal) }
+        workspaceNewRequest.title = "New request"; workspaceNewRequest.target = self; workspaceNewRequest.action = #selector(newRequest)
+        workspaceNewRequest.style = .primary; workspaceNewRequest.toolTip = "Create a new request (⌘N)"
+        workspaceNewRequest.font = .systemFont(ofSize: 14, weight: .semibold)
+        workspaceNewRequest.setContentHuggingPriority(.defaultLow, for: .horizontal); workspaceNewRequest.setContentHuggingPriority(.defaultLow, for: .vertical)
+        let group = NSStackView(views: [workspaceIllustration, workspaceTitle, workspaceMessage, workspaceNewRequest])
+        group.orientation = .vertical; group.alignment = .centerX; group.spacing = 8; group.setCustomSpacing(14, after: workspaceIllustration); group.setCustomSpacing(16, after: workspaceMessage)
+        group.setHuggingPriority(.init(1), for: .horizontal); group.identifier = .init("workspacePlaceholder")
+        group.translatesAutoresizingMaskIntoConstraints = false; emptyWorkspace.addSubview(group)
+        let width = group.widthAnchor.constraint(equalTo: emptyWorkspace.widthAnchor, constant: -48); width.priority = .init(100)
+        let imageHeight = workspaceIllustration.heightAnchor.constraint(equalToConstant: 220); imageHeight.priority = .defaultLow
+        NSLayoutConstraint.activate([
+            group.centerXAnchor.constraint(equalTo: emptyWorkspace.centerXAnchor), group.centerYAnchor.constraint(equalTo: emptyWorkspace.centerYAnchor),
+            group.widthAnchor.constraint(lessThanOrEqualToConstant: 520), group.widthAnchor.constraint(lessThanOrEqualTo: emptyWorkspace.widthAnchor, constant: -32), width,
+            group.topAnchor.constraint(greaterThanOrEqualTo: emptyWorkspace.topAnchor, constant: 16), group.bottomAnchor.constraint(lessThanOrEqualTo: emptyWorkspace.bottomAnchor, constant: -16),
+            workspaceTitle.widthAnchor.constraint(equalTo: group.widthAnchor), workspaceMessage.widthAnchor.constraint(equalTo: group.widthAnchor),
+            workspaceIllustration.widthAnchor.constraint(equalTo: workspaceIllustration.heightAnchor),
+            workspaceIllustration.heightAnchor.constraint(greaterThanOrEqualToConstant: 40), workspaceIllustration.heightAnchor.constraint(lessThanOrEqualToConstant: 220), imageHeight,
+            workspaceNewRequest.widthAnchor.constraint(equalToConstant: 160), workspaceNewRequest.heightAnchor.constraint(equalToConstant: 40)
+        ])
+    }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         var identifiers = windowToolbarItems.map(\.itemIdentifier)
-        identifiers.insert(.flexibleSpace, at: 3)
+        identifiers.insert(.flexibleSpace, at: 2)
         return identifiers
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         windowToolbarItems.first { $0.itemIdentifier == itemIdentifier }
+    }
+    @objc func checkForUpdates() { updateController.check(manual: true) }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(checkForUpdates) { return !updateController.isChecking }
+        if menuItem.action == #selector(copyRequestAsCurl) { return current != nil && !copyingRequest }
+        if let action = menuItem.action, [#selector(saveRequest), #selector(sendRequest), #selector(closeCurrentTab)].contains(action) { return current != nil }
+        if menuItem.action == #selector(exportResponse) { return current?.response != nil }
+        return true
     }
     func draftChanged() { if !updating { refreshTabBar() } }
     func commitFields() { window?.makeFirstResponder(nil); if let r = current?.request { if r.url != url.stringValue { r.setURL(url.stringValue) } } }
@@ -177,7 +244,7 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         }
         tabBar.frame = NSRect(x: 0, y: 0, width: max(tabScroll.contentSize.width, x + 10), height: 44)
         tabBar.scrollToVisible(selectedFrame)
-        save.isEnabled = current?.draft.isDirty == true
+        save.isEnabled = current?.draft.canSave == true
         window?.isDocumentEdited = current?.draft.isDirty == true
     }
     func open(_ request: RequestItem) {
@@ -185,6 +252,28 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         if let tab = tabs.first(where: { $0.draft.source === request }) { current = tab }
         else { let saved = store.collections.contains { $0.allRequests.contains { $0 === request } }; let tab = RequestTab(request, saved: saved); tabs.append(tab); current = tab }
         displayCurrent()
+    }
+    func openHistory(_ entry: HistoryEntry) {
+        guard var snapshot = entry.json["snapshot"] as? JSON else { return }
+        commitFields()
+        // A history snapshot is a new, temporary draft, never the original saved entry.
+        snapshot.removeValue(forKey: "_relayID")
+        let sourceID = entry.json["sourceRequestID"] as? String
+        let snapshotRequest = RequestItem(item: snapshot)
+        let requests = store.collections.flatMap(\.allRequests)
+        let original: RequestItem?
+        if let sourceID { original = requests.first { $0.id == sourceID } }
+        else {
+            // Older history has no identity; only use an unambiguous matching request.
+            let matches = requests.filter { $0.name == snapshotRequest.name && $0.method == snapshotRequest.method && $0.url == snapshotRequest.url }
+            original = matches.count == 1 ? matches[0] : nil
+        }
+        snapshotRequest.variables = original?.variables ?? [:]
+        snapshotRequest.inheritedAuth = original?.inheritedAuth
+        let tab = RequestTab(snapshotRequest, saved: false, ephemeral: true)
+        tab.historySourceRequestID = sourceID ?? original?.id
+        tab.historyCollection = original.flatMap { original in store.collections.first { $0.allRequests.contains { $0 === original } } }
+        tabs.append(tab); current = tab; displayCurrent()
     }
     @objc func selectTab(_ sender: NSButton) { commitFields(); guard tabs.indices.contains(sender.tag) else { return }; current = tabs[sender.tag]; displayCurrent() }
     @objc func closeCurrentTab() { guard let current, let i = tabs.firstIndex(where: { $0 === current }) else { return }; let sender = NSButton(); sender.tag = i; closeTab(sender) }
@@ -195,7 +284,7 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
             self.tabs.remove(at: index); tab.transfer?.cancel(); tab.resetWork()
             if let file = tab.response?.file { try? FileManager.default.removeItem(at: file) }; if let file = tab.prettyFile { try? FileManager.default.removeItem(at: file) }
             if self.current === tab { self.current = self.tabs.isEmpty ? nil : self.tabs[min(index, self.tabs.count - 1)] }
-            if self.tabs.isEmpty { self.newRequest() } else { self.displayCurrent() }
+            self.displayCurrent()
         }
     }
     func confirmDiscard(_ tab: RequestTab, completion: @escaping (Bool) -> Void) {
@@ -207,7 +296,14 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         }
     }
     func displayCurrent() {
-        guard let tab = current else { return }; updating = true; let r = tab.request; url.stringValue = r.url; if method.itemTitles.contains(r.method) { method.selectItem(withTitle: r.method) } else { method.addItem(withTitle: r.method); method.selectItem(withTitle: r.method) }; params.rows = r.params; headers.rows = r.headers; body.set(r.body, highlight: r.bodyMode == "raw"); form.rows = r.form
+        editorWorkspace.isHidden = current == nil; emptyWorkspace.isHidden = current != nil
+        send.isEnabled = current != nil; copyRequest.isEnabled = current != nil && !copyingRequest
+        guard let tab = current else {
+            updating = true; url.stringValue = ""; params.rows = []; headers.rows = []; form.rows = []; authFields.rows = []
+            body.set(""); response.set(""); responseReader.clear(); updating = false
+            saveResponse.isEnabled = false; copyResponse.isEnabled = false; responseFind.isEnabled = false; pretty.isEnabled = false
+            footer.stringValue = ""; refreshTabBar(); return
+        }; updating = true; let r = tab.request; url.stringValue = r.url; if method.itemTitles.contains(r.method) { method.selectItem(withTitle: r.method) } else { method.addItem(withTitle: r.method); method.selectItem(withTitle: r.method) }; params.rows = r.params; headers.rows = r.headers; body.set(r.body, highlight: r.bodyMode == "raw"); form.rows = r.form
         bodyMode.selectItem(at: ["raw", "urlencoded", "file", "formdata"].firstIndex(of: r.bodyMode) ?? 3)
         let type = r.auth?["type"] as? String; authMode.selectItem(at: type == nil ? 0 : (["noauth", "bearer", "basic", "apikey"].firstIndex(of: type!).map { $0 + 1 } ?? 5)); authFields.rows = type.map { (r.auth?[$0] as? [JSON] ?? []).map(Pair.init) } ?? []
         updating = false; refreshTabBar(); requestSectionChanged(); showBodyMode(); renderResponse()
@@ -216,15 +312,36 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     func controlTextDidChange(_ obj: Notification) { if obj.object as? NSSearchField === search { reloadSidebar(); return }; if updating { return }; if obj.object as? NSTextField === url { current?.request.setURL(url.stringValue); params.rows = current?.request.params ?? []; draftChanged() } }
 
     func updateURLFromParams() { guard let r = current?.request else { return }; r.url = r.resolvedRawURL; url.stringValue = r.url }
-    @objc func requestSectionChanged() { for (i, child) in requestHost.subviews.enumerated() { child.isHidden = i != requestSegment.selectedSegment }; let hasScripts = (current?.request.original["event"] as? [JSON])?.isEmpty == false || selectedCollection?.original["event"] != nil; requestHint.stringValue = hasScripts ? "Postman scripts preserved · not executed" : "" }
-    func showBodyMode() { chooseFile.isHidden = current?.request.bodyMode != "file"; body.syntaxHighlighting = current?.request.bodyMode == "raw"; bodyHost.subviews.forEach { $0.removeFromSuperview() }; if ["urlencoded", "formdata"].contains(current?.request.bodyMode ?? "") { pin(form, in: bodyHost) } else { pin(body, in: bodyHost, inset: 10, verticalInset: 8); body.text.isEditable = current?.request.bodyMode != "file"; if current?.request.bodyMode == "file" { body.set(current?.request.body ?? "Choose a file for a memory-efficient upload.") } } }
+    @objc func requestSectionChanged() {
+        let selected = requestSegment.selectedSegment
+        for (i, child) in requestHost.subviews.enumerated() { child.isHidden = i != selected }
+        bodyMode.isHidden = selected != 0; authMode.isHidden = selected != 3
+        bodyMode.superview?.isHidden = selected != 0; authMode.superview?.isHidden = selected != 3
+        requestOptions.isHidden = selected != 0 && selected != 3
+        let hasScripts = (current?.request.original["event"] as? [JSON])?.isEmpty == false || selectedCollection?.original["event"] != nil
+        requestHint.stringValue = hasScripts ? "Postman scripts preserved · not executed" : ""
+    }
+    func showBodyMode() {
+        let file = current?.request.bodyMode == "file"
+        chooseFile.isHidden = !file; body.syntaxHighlighting = current?.request.bodyMode == "raw"
+        bodyHost.subviews.forEach { $0.removeFromSuperview() }
+        if ["urlencoded", "formdata"].contains(current?.request.bodyMode ?? "") { pin(form, in: bodyHost) }
+        else {
+            body.text.isEditable = !file
+            if file {
+                body.set(current?.request.body ?? "Choose a file for a memory-efficient upload.")
+                let controls = padded(stack([chooseFile, spacer()]), x: 10, top: 8, bottom: 0)
+                let layout = stack([controls, padded(body, x: 10, y: 8)], vertical: true, spacing: 0); layout.alignment = .width; pin(layout, in: bodyHost)
+            } else { pin(body, in: bodyHost, inset: 10, verticalInset: 8) }
+        }
+    }
     @objc func bodyModeChanged() { current?.request.bodyMode = ["raw", "urlencoded", "file", "formdata"][bodyMode.indexOfSelectedItem]; showBodyMode(); draftChanged() }
     @objc func chooseBodyFile() { let p = NSOpenPanel(); p.canChooseDirectories = false; p.beginSheetModal(for: window!) { [weak self] result in guard result == .OK, let url = p.url, let self = self else { return }; self.current?.request.bodyMode = "file"; self.current?.request.body = url.path; self.bodyMode.selectItem(at: 2); self.showBodyMode(); self.draftChanged() } }
     @objc func authModeChanged() {
         guard let r = current?.request else { return }; let index = authMode.indexOfSelectedItem
         if index == 0 { r.auth = nil; authFields.rows = [] } else if index < 5 { let type = ["noauth", "bearer", "basic", "apikey"][index - 1]; let keys: [String] = type == "bearer" ? ["token"] : type == "basic" ? ["username", "password"] : type == "apikey" ? ["key", "value", "in"] : []; let rows = keys.map { Pair($0, $0 == "in" ? "header" : "") }; r.auth = ["type": type, type: rows.map(\.json)]; authFields.rows = rows }; draftChanged()
     }
-    @objc func newRequest() { commitFields(); let r = RequestItem(); let tab = RequestTab(r, saved: false); tab.destination = insertionContainer(for: outline.item(atRow: outline.selectedRow)); tabs.append(tab); current = tab; displayCurrent(); window?.makeFirstResponder(url) }
+    @objc func newRequest() { commitFields(); let r = RequestItem(); let tab = RequestTab(r, saved: false); tabs.append(tab); current = tab; displayCurrent(); window?.makeFirstResponder(url) }
     @objc func saveRequest() {
         commitFields(); guard let tab = current else { return }
         if tab.draft.source == nil && tab.request.name == "Untitled request" {
@@ -236,11 +353,16 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         func replace(_ nodes: [CollectionNode]) { for node in nodes { if let old, node.request === old { node.request = saved; node.name = saved.name; replaced = true }; replace(node.children) } }
         for collection in store.collections { replace(collection.nodes) }
         if !replaced {
-            if store.collections.isEmpty { makeCollection("My collection") }
-            let collection = selectedCollection.flatMap { selected in store.collections.first { $0 === selected } } ?? store.collections[0]
-            let target = tab.destination.flatMap { $0.isValid(in: store.collections) ? $0 : nil } ?? CollectionContainer(collection: collection)
+            if store.collections.isEmpty { makeCollection("My requests") }
+            let originalCollection = tab.historySourceRequestID.flatMap { id in
+                store.collections.first { $0.allRequests.contains { $0.id == id } }
+            } ?? tab.historyCollection.flatMap { original in store.collections.first { $0 === original } }
+            let collection = originalCollection ?? store.collections.first {
+                sidebarMode == 0 ? outline.isItemExpanded($0) : expandedFolders.contains(ObjectIdentifier($0))
+            } ?? store.collections[0]
+            let target = CollectionContainer(collection: collection)
             let node = CollectionNode(json: saved.exported()); node.request = saved; target.nodes.append(node)
-            CollectionTree.refreshInheritance(in: target.collection); selectedCollection = target.collection; tab.destination = nil
+            CollectionTree.refreshInheritance(in: target.collection); selectedCollection = target.collection; tab.historySourceRequestID = nil; tab.historyCollection = nil
             revealTreeItem(node)
         }
         synchronizeDraftInheritance(); store.save(); reloadSidebar(); refreshTabBar()
@@ -251,10 +373,10 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     func reloadSidebar(selecting item: Any? = nil) {
         let selection = item ?? outline.item(atRow: outline.selectedRow)
         let q = search.stringValue.lowercased(); filtered = sidebarMode == 0 ? store.collections.filter { q.isEmpty || $0.name.lowercased().contains(q) || $0.allRequests.contains(where: { $0.name.lowercased().contains(q) || $0.url.lowercased().contains(q) }) } : store.history.filter { q.isEmpty || Pair.string($0["name"]).lowercased().contains(q) || Pair.string($0["url"]).lowercased().contains(q) }.map(HistoryEntry.init)
-        restoringTree = true; outline.reloadData()
+        restoringTree = true; outline.reloadData(); outline.collapseItem(nil, collapseChildren: true)
         if sidebarMode == 0 {
             func expand(_ item: AnyObject) {
-                if search.stringValue.isEmpty && collapsedFolders.contains(ObjectIdentifier(item)) { return }
+                if search.stringValue.isEmpty && !expandedFolders.contains(ObjectIdentifier(item)) { return }
                 outline.expandItem(item)
                 for child in children(item) { if let c = child as? CollectionNode, c.request == nil { expand(c) } }
             }
@@ -295,10 +417,10 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         if let c = item as? Collection { selectedCollection = c }
         if let n = item as? CollectionNode { func contains(_ nodes: [CollectionNode]) -> Bool { nodes.contains { $0 === n || contains($0.children) } }
             selectedCollection = store.collections.first { contains($0.nodes) }; if let r = n.request { open(r) } }
-        if let history = item as? HistoryEntry, let snapshot = history.json["snapshot"] as? JSON { open(RequestItem(item: snapshot)) }
+        if let history = item as? HistoryEntry { openHistory(history) }
     }
-    func outlineViewItemDidCollapse(_ notification: Notification) { if !restoringTree, let item = notification.userInfo?["NSObject"] as AnyObject? { collapsedFolders.insert(ObjectIdentifier(item)) } }
-    func outlineViewItemDidExpand(_ notification: Notification) { if !restoringTree, let item = notification.userInfo?["NSObject"] as AnyObject? { collapsedFolders.remove(ObjectIdentifier(item)) } }
+    func outlineViewItemDidCollapse(_ notification: Notification) { if !restoringTree, let item = notification.userInfo?["NSObject"] as AnyObject? { expandedFolders.remove(ObjectIdentifier(item)) } }
+    func outlineViewItemDidExpand(_ notification: Notification) { if !restoringTree, let item = notification.userInfo?["NSObject"] as AnyObject? { expandedFolders.insert(ObjectIdentifier(item)) } }
     func contextItem() -> Any? { outline.item(atRow: outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow) }
     @objc func renameNode() { renameTreeItem(contextItem()) }
     func renameTreeItem(_ item: Any?) { if let c = item as? Collection { prompt("Rename collection", value: c.name) { [weak self] value in c.name = value; self?.store.save(); self?.reloadSidebar() } } else if let n = item as? CollectionNode { prompt("Rename \(n.request == nil ? "folder" : "request")", value: n.request?.name ?? n.name) { [weak self] value in n.name = value; n.request?.name = value; self?.tabs.filter { $0.draft.source === n.request }.forEach { $0.request.name = value }; self?.store.save(); self?.reloadSidebar(); self?.displayCurrent() } } }
@@ -309,8 +431,18 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         commitFields(); let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = true; panel.message = "Select Postman collection v2.1 or environment JSON files."; panel.beginSheetModal(for: window!) { [weak self] result in guard result == .OK, let self = self else { return }; let urls = panel.urls; self.status.stringValue = "Importing…"; self.worker.async {
             var collections: [Collection] = []; var environments: [Environment] = []; var errors: [String] = []
             for url in urls { do { let json = try Postman.read(Data(contentsOf: url)); if json["info"] != nil { collections.append(try Collection(json: json)) } else { environments.append(try Environment(json: json)) } } catch { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") } }
-            DispatchQueue.main.async { self.store.collections.append(contentsOf: collections); self.store.environments.append(contentsOf: environments); if let c = collections.first { self.selectedCollection = c; if let r = c.allRequests.first { self.open(r) } }; self.refreshEnvironments(); self.store.save(); self.reloadSidebar(); self.requestHint.stringValue = "Imported \(collections.count) collections, \(environments.count) environments"; if !errors.isEmpty { self.showError(errors.joined(separator: "\n\n")) } }
+            DispatchQueue.main.async { self.applyImport(collections: collections, environments: environments); if !errors.isEmpty { self.showError(errors.joined(separator: "\n\n")) } }
         } }
+    }
+    func applyImport(collections: [Collection], environments: [Environment]) {
+        store.collections.append(contentsOf: collections); store.environments.append(contentsOf: environments)
+        if let collection = collections.first {
+            // Clear search's temporary expansion so imported branches start collapsed.
+            search.stringValue = ""; selectedCollection = collection
+            if let request = collection.allRequests.first { open(request) }
+        }
+        refreshEnvironments(); store.save(); reloadSidebar(selecting: collections.first)
+        requestHint.stringValue = "Imported \(collections.count) collections, \(environments.count) environments"
     }
     @objc func exportCollection() {
         commitFields(); let c = (contextItem() as? Collection) ?? selectedCollection ?? store.collections.first
@@ -324,11 +456,12 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
             let variables = store.environments.indices.contains(store.selectedEnvironment) ? store.environments[store.selectedEnvironment].variables : [:]
             let (request, file) = try RequestBuilder.build(tab.request, environment: variables)
             let snapshot = tab.request.exported(); let sentName = tab.request.name
+            let sourceRequestID = tab.draft.source?.id ?? tab.historySourceRequestID ?? tab.request.id
             tab.error = nil; tab.resetWork()
             if let old = tab.response?.file { try? FileManager.default.removeItem(at: old) }; if let old = tab.prettyFile { try? FileManager.default.removeItem(at: old) }; tab.response = nil; tab.prettyFile = nil
             let transfer = try HTTPTransfer(directory: store.responses, completion: { [weak self, weak tab] result in
                 guard let self = self, let tab = tab else { return }; tab.transfer = nil
-                switch result { case .success(let response): tab.response = response; self.store.history.insert(["name": sentName, "method": request.httpMethod ?? "GET", "url": request.url?.absoluteString ?? "", "status": response.status, "date": ISO8601DateFormatter().string(from: Date()), "snapshot": snapshot], at: 0); self.store.history = Array(self.store.history.prefix(100)); self.store.save(); self.reloadSidebar()
+                switch result { case .success(let response): tab.response = response; self.store.history.insert(["name": sentName, "method": request.httpMethod ?? "GET", "url": request.url?.absoluteString ?? "", "status": response.status, "date": ISO8601DateFormatter().string(from: Date()), "snapshot": snapshot, "sourceRequestID": sourceRequestID], at: 0); self.store.history = Array(self.store.history.prefix(100)); self.store.save(); self.reloadSidebar()
                 case .failure(let error): tab.error = (error as NSError).code == NSURLErrorCancelled ? "Request cancelled." : error.localizedDescription }
                 if self.current === tab { self.renderResponse(); if let response = tab.response, response.bytes < 2_000_000, response.contentType.contains("json") { self.togglePretty() } }
             }, progress: { [weak self, weak tab] bytes in guard let self = self, let tab = tab, self.current === tab else { return }; self.status.stringValue = "Receiving \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))…" })
@@ -378,6 +511,30 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
                         self.copyFeedbackReset = reset; DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: reset)
                     } else { self.showError("Could not copy the response body to the clipboard.") }
                 case .failure(let error): self.showError("Could not copy the response body: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    @objc func copyRequestAsCurl() {
+        guard !copyingRequest else { return }
+        commitFields(); guard let tab = current else { return }
+        let snapshot = RequestDraft(tab.request, saved: false).request
+        let variables = store.environments.indices.contains(store.selectedEnvironment) ? store.environments[store.selectedEnvironment].variables : [:]
+        copyRequestFeedbackReset?.cancel(); copyingRequest = true; copyRequest.isEnabled = false; copyRequest.title = "Copying…"
+        worker.async {
+            let result = Result { try CurlExporter.command(snapshot, environment: variables) }
+            DispatchQueue.main.async {
+                self.copyingRequest = false; self.copyRequest.isEnabled = self.current != nil; self.copyRequest.title = "Copy as cURL"
+                switch result {
+                case .success(let command):
+                    NSPasteboard.general.clearContents()
+                    if NSPasteboard.general.setString(command, forType: .string) {
+                        self.copyRequest.title = "Copied!"
+                        NSAccessibility.post(element: self.copyRequest, notification: .announcementRequested, userInfo: [.announcement: "Request copied as cURL", .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+                        let reset = DispatchWorkItem { [weak self] in self?.copyRequest.title = "Copy as cURL" }
+                        self.copyRequestFeedbackReset = reset; DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: reset)
+                    } else { self.showError("Could not copy the cURL command to the clipboard.") }
+                case .failure(let error): self.showError(error.localizedDescription)
                 }
             }
         }

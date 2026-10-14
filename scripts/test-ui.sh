@@ -7,7 +7,8 @@ SWIFTC=$(xcrun --find swiftc)
 CHECK_APP="$PWD/build/ui-checks/run/Postino UI Checks.app"
 mkdir -p "$CHECK_APP/Contents/MacOS"
 mkdir -p "$CHECK_APP/Contents/Resources"
-cp Resources/ResponseEmpty.png Resources/ResponseError.png "$CHECK_APP/Contents/Resources/"
+cp Resources/ResponseEmpty.png Resources/ResponseError.png Resources/WorkspaceEmpty.png "$CHECK_APP/Contents/Resources/"
+cp Resources/InstallUpdate.sh "$CHECK_APP/Contents/Resources/"
 cp Info.plist "$CHECK_APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier app.postauomo.uichecks" "$CHECK_APP/Contents/Info.plist"
 APP_SOURCES=(Sources/Postino/*.swift)

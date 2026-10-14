@@ -1,6 +1,19 @@
 import AppKit
 import RelayCore
 
+private final class UIReleaseProtocol: URLProtocol {
+    static var body = Data()
+    static var requests = 0
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requests += 1
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.body); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 @main
 struct UIChecks {
     static func main() throws {
@@ -20,12 +33,53 @@ struct UIChecks {
         let continued = #"continued text", "key":true}"# as NSString
         let continuedTokens = JSONSyntax.tokens(in: continued, range: NSRange(location: 0, length: continued.length), initiallyInString: true)
         precondition(continuedTokens.map(\.kind) == [.string, .key, .literal], "Chunk highlighting carries JSON string state")
+        let clipboard = NSPasteboard.general
+        let savedClipboard = clipboard.pasteboardItems?.map { item -> NSPasteboardItem in
+            let saved = NSPasteboardItem()
+            for type in item.types { if let data = item.data(forType: type) { saved.setData(data, forType: type) } }
+            return saved
+        } ?? []
+        defer { clipboard.clearContents(); if !savedClipboard.isEmpty { clipboard.writeObjects(savedClipboard) } }
         let controller = MainWindow()
         let window = controller.window!
         func layout() { window.contentView!.layoutSubtreeIfNeeded(); RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.12)); window.contentView!.layoutSubtreeIfNeeded() }
         layout()
         let split = controller.sidebarSplit.splitView
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        precondition(controller.tabs.isEmpty && controller.current == nil && controller.editorWorkspace.isHidden && !controller.emptyWorkspace.isHidden, "Startup shows the empty workspace with no automatic request")
+        precondition(controller.readyIllustration != nil && controller.workspaceIllustration.image === controller.readyIllustration, "The ready-to-go postman is packaged and displayed")
+        precondition(controller.workspaceTitle.stringValue == "Welcome!" && controller.workspaceMessage.stringValue == "Create or open a request to get started." && controller.workspaceNewRequest.title == "New request", "Empty workspace uses the requested title, description and action")
+        let workspacePlaceholder = descendants(controller.emptyWorkspace).first { $0.identifier?.rawValue == "workspacePlaceholder" }!
+        let saveMenu = NSMenuItem(title: "Save Request", action: #selector(MainWindow.saveRequest), keyEquivalent: "s")
+        precondition(!controller.validateMenuItem(saveMenu) && !controller.send.isEnabled && !controller.copyRequest.isEnabled, "Request actions are disabled without an open request")
+        for width: CGFloat in [980, 1200] {
+            window.setContentSize(NSSize(width: width, height: 700)); split.setPosition(330, ofDividerAt: 0); layout()
+            let box = workspacePlaceholder.convert(workspacePlaceholder.bounds, to: controller.emptyWorkspace)
+            precondition(abs(box.midX - controller.emptyWorkspace.bounds.midX) < 1 && abs(box.midY - controller.emptyWorkspace.bounds.midY) < 1 && controller.emptyWorkspace.bounds.insetBy(dx: 15, dy: 15).contains(box), "Empty workspace is centered and fits at narrow and wide sizes")
+            let image = controller.workspaceIllustration.convert(controller.workspaceIllustration.bounds, to: controller.emptyWorkspace)
+            let title = controller.workspaceTitle.convert(controller.workspaceTitle.bounds, to: controller.emptyWorkspace)
+            let message = controller.workspaceMessage.convert(controller.workspaceMessage.bounds, to: controller.emptyWorkspace)
+            let button = controller.workspaceNewRequest.convert(controller.workspaceNewRequest.bounds, to: controller.emptyWorkspace)
+            precondition(image.minY > title.maxY && title.minY > message.maxY && message.minY > button.maxY && abs(button.midX - box.midX) < 1, "Title, description and New request button are centered below the artwork")
+            for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+                window.appearance = NSAppearance(named: appearance); layout()
+                let view = window.contentView!.superview!
+                let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/workspace-empty-\(Int(width))-\(suffix).png"))
+            }
+        }
+        window.appearance = nil
+        controller.workspaceNewRequest.performClick(nil); layout()
+        precondition(controller.tabs.count == 1 && controller.current?.draft.source == nil && controller.emptyWorkspace.isHidden && !controller.editorWorkspace.isHidden && controller.send.isEnabled, "Empty-state action opens a normal new request")
+        controller.closeCurrentTab(); layout()
+        precondition(controller.tabs.isEmpty && controller.current == nil && !controller.emptyWorkspace.isHidden && controller.editorWorkspace.isHidden && window.attachedSheet == nil, "Closing the final blank request returns to the empty workspace")
+        let firstRequest = controller.store.collections[0].allRequests[0]
+        controller.open(firstRequest); layout()
+        precondition(controller.emptyWorkspace.isHidden && controller.current?.draft.source === firstRequest, "Opening a collection request replaces the empty state")
+        controller.closeCurrentTab(); layout()
+        precondition(controller.tabs.isEmpty && controller.current == nil && !controller.emptyWorkspace.isHidden, "Closing the final stored request never creates a placeholder request")
+        controller.open(firstRequest); layout()
         let placeholder = descendants(controller.emptyResponse).first { $0.identifier?.rawValue == "responsePlaceholder" }!
         precondition(controller.unsentIllustration != nil && controller.errorIllustration != nil, "Both response illustrations are packaged with the app")
         precondition(controller.emptyIllustration.image === controller.unsentIllustration && !controller.emptyIllustration.isHidden, "Unsent requests show the empty mailbox")
@@ -51,12 +105,19 @@ struct UIChecks {
         let actionViews = toolbar.items.compactMap(\.view)
         let headerDividers = descendants(window.contentView!).compactMap { $0 as? Surface }.filter { ["toolbarDivider", "footerDivider"].contains($0.identifier?.rawValue ?? "") }
         precondition(window.titleVisibility == .hidden && window.titlebarAppearsTransparent && window.toolbarStyle == .unified, "The native window buttons share one transparent unified toolbar")
-        precondition(actionViews.count == 4 && actionViews.flatMap(descendants).compactMap { $0 as? RelayButton }.contains { $0.title == "New collection" }, "The unified toolbar retains actions and clearly labels collection creation")
+        precondition(actionViews.count == 3 && actionViews.flatMap(descendants).compactMap { $0 as? RelayButton }.contains { $0.title == "New collection" }, "The unified toolbar retains creation and environment actions")
+        precondition(!actionViews.flatMap(descendants).contains { $0 === controller.save }, "Save belongs beside Send, not in the window toolbar")
+        precondition(!actionViews.flatMap(descendants).compactMap { $0 as? RelayButton }.contains { $0.title == "Check for updates" }, "Update checks belong in the macOS menu bar")
+        let menuDelegate = AppDelegate(); menuDelegate.controller = controller; menuDelegate.makeMenu()
+        let appMenu = NSApp.mainMenu!.items[0].submenu!
+        precondition(appMenu.items.contains { $0.action == #selector(MainWindow.checkForUpdates) && $0.target === controller }, "The Postino system menu provides manual update checks")
+        let fileMenu = NSApp.mainMenu!.items.first { $0.title == "File" }!.submenu!
+        precondition(fileMenu.items.contains { $0.action == #selector(MainWindow.copyRequestAsCurl) && $0.keyEquivalent == "c" && $0.keyEquivalentModifierMask == [.command, .shift] }, "Copy as cURL has a native File-menu shortcut")
         let toolbarButtons = actionViews.flatMap(descendants).compactMap { $0 as? RelayButton }
         precondition(toolbarButtons.filter { ["New request", "New collection"].contains($0.title) }.allSatisfy { $0.isEnabled && $0.target === controller }, "Creation controls retain their enabled state and action targets in the toolbar")
         let originalName = controller.current!.request.name
         controller.current!.request.name = originalName + " modified"; controller.draftChanged(); toolbar.validateVisibleItems()
-        precondition(controller.save.isEnabled, "Save enables for a modified draft inside the native toolbar")
+        precondition(controller.save.isEnabled, "Save enables for a modified draft")
         controller.current!.request.name = originalName; controller.draftChanged(); toolbar.validateVisibleItems()
         precondition(!controller.save.isEnabled, "Save disables again when the draft matches the collection")
         precondition(!descendants(split.arrangedSubviews[0]).contains { $0 is NSImageView || ($0 as? NSTextField)?.stringValue == "Postino" }, "Sidebar starts with navigation, without duplicate branding")
@@ -74,7 +135,13 @@ struct UIChecks {
             precondition(closeBox.minY > dividerBox.maxY, "Native window buttons stay above the toolbar divider")
             let actionBoxes = actionViews.map { $0.convert($0.bounds, to: window.contentView) }
             precondition(actionBoxes.allSatisfy { $0.minY > dividerBox.maxY && $0.maxX <= contentWidth && $0.width > 0 }, "Toolbar actions fit above the content at every supported window width")
-            precondition(actionBoxes[0].minX > closeBox.maxX && actionBoxes[0].maxX < actionBoxes[1].minX && actionBoxes[1].maxX < actionBoxes[2].minX && actionBoxes[2].maxX < actionBoxes[3].minX, "Window controls and toolbar actions never overlap")
+            precondition(actionBoxes[0].minX > closeBox.maxX && zip(actionBoxes, actionBoxes.dropFirst()).allSatisfy { $0.maxX < $1.minX }, "Window controls and toolbar actions never overlap")
+            let copyBox = controller.copyRequest.convert(controller.copyRequest.bounds, to: window.contentView)
+            let sectionsBox = controller.requestSegment.convert(controller.requestSegment.bounds, to: window.contentView)
+            precondition(copyBox.minX > sectionsBox.maxX && copyBox.maxX <= contentWidth && controller.copyRequest.frame.height == 28, "Copy as cURL fits beside the request sections")
+            let sendBox = controller.send.convert(controller.send.bounds, to: window.contentView)
+            let saveBox = controller.save.convert(controller.save.bounds, to: window.contentView)
+            precondition(abs(saveBox.minX - sendBox.maxX - 8) < 1 && abs(saveBox.midY - sendBox.midY) < 1, "Save sits immediately to the right of Send")
             precondition(headerDividers.allSatisfy { abs($0.frame.width - contentWidth) < 1 && $0.frame.height == 1 }, "Header and footer dividers span the whole window")
             split.setPosition(200, ofDividerAt: 0); layout(); let narrow = split.arrangedSubviews[0].frame.width
             precondition(controller.outline.tableColumns[0].width <= controller.outline.enclosingScrollView!.contentView.bounds.width + 1, "Tree column must fit a narrow sidebar")
@@ -86,6 +153,11 @@ struct UIChecks {
                 let width = (item as NSString).size(withAttributes: [.font: controller.bodyMode.font!]).width
                 precondition(width <= controller.bodyMode.frame.width - 30, "Every body mode must be legible")
             }
+            controller.requestSegment.selectedSegment = 3; controller.requestSectionChanged(); layout()
+            let authBox = controller.authMode.convert(controller.authMode.bounds, to: window.contentView)
+            let authCopyBox = controller.copyRequest.convert(controller.copyRequest.bounds, to: window.contentView)
+            precondition(authBox.maxX < authCopyBox.minX && authCopyBox.maxX <= contentWidth, "Authorization controls fit at every supported window width")
+            controller.requestSegment.selectedSegment = 0; controller.requestSectionChanged(); layout()
         }
         let all = descendants(window.contentView!) + actionViews.flatMap(descendants)
         let resizeSplits = all.compactMap { $0 as? ResizeSplitView }
@@ -168,7 +240,15 @@ struct UIChecks {
         precondition(abs(urlBox.minY - segmentBox.maxY - 8) < 0.5, "URL and section group have the same eight-point gap as the top inset")
         let bodyBox = controller.body.convert(controller.body.bounds, to: window.contentView)
         let modeBox = controller.bodyMode.convert(controller.bodyMode.bounds, to: window.contentView)
-        precondition(abs(modeBox.minY - bodyBox.maxY - 8) < 0.5, "Body dropdown and editor use the same eight-point gap")
+        precondition(abs(modeBox.midY - segmentBox.midY) < 0.5 && modeBox.minX > segmentBox.maxX && modeBox.maxY > bodyBox.maxY, "Body format sits beside the request pills")
+        for section in [1, 2, 3, 0] {
+            controller.requestSegment.selectedSegment = section; controller.requestSectionChanged(); layout()
+            precondition(controller.bodyMode.isHidden == (section != 0) && controller.authMode.isHidden == (section != 3), "Only the selected section's dropdown is visible")
+            if section == 3 {
+                let authBox = controller.authMode.convert(controller.authMode.bounds, to: window.contentView)
+                precondition(abs(authBox.midY - segmentBox.midY) < 1 && authBox.minX > segmentBox.maxX, "Authentication dropdown sits beside the request pills")
+            }
+        }
         precondition(all.compactMap { $0 as? RelaySegments }.allSatisfy { $0.frame.height == 28 && $0.controlSize == .large }, "Selection groups match action-button height")
         precondition(controller.tabScroll.frame.height == 44 && controller.tabBar.subviews.allSatisfy { $0.frame.minY == 8 && $0.frame.height == 28 }, "Request tabs use matching vertical insets")
         precondition(!all.compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("Formatted JSON") || $0.stringValue.hasPrefix("Page 1 of") }, "Footer has no paging or format noise")
@@ -208,13 +288,6 @@ struct UIChecks {
         waitFor { controller.response.text.selectedRange().length == 11 }
         let selected = (controller.response.text.string as NSString).substring(with: controller.response.text.selectedRange())
         precondition(selected == "TAIL-MARKER", "Full-file search selects the exact byte offset")
-        let clipboard = NSPasteboard.general
-        let savedClipboard = clipboard.pasteboardItems?.map { item -> NSPasteboardItem in
-            let saved = NSPasteboardItem()
-            for type in item.types { if let data = item.data(forType: type) { saved.setData(data, forType: type) } }
-            return saved
-        } ?? []
-        defer { clipboard.clearContents(); if !savedClipboard.isEmpty { clipboard.writeObjects(savedClipboard) } }
         controller.current!.response = HTTPResult(file: fixture, status: 200, headers: [:], bytes: Int64(bytes.count), duration: 0.1, url: "http://localhost", contentType: "text/plain")
         controller.copyResponseBody()
         waitFor { !controller.copyingResponse }
@@ -234,6 +307,98 @@ struct UIChecks {
         let matchColor = controller.response.text.layoutManager!.temporaryAttribute(.foregroundColor, atCharacterIndex: controller.response.text.selectedRange().location, effectiveRange: nil) as? NSColor
         precondition(matchColor == syntaxStringColor, "Disk lexical context keeps mid-string chunks highlighted correctly")
         reader.open(fixture, highlight: false); reader.clear()
+        let copiedTab = controller.current!, originalURL = controller.current!.request.url
+        let originalVariables = copiedTab.request.variables
+        copiedTab.request.variables["curl_base"] = "https://example.com"
+        controller.url.stringValue = "{{curl_base}}/unsaved-copy"
+        controller.copyRequestAsCurl(); waitFor { !controller.copyingRequest }
+        precondition(NSPasteboard.general.string(forType: .string)?.contains("https://example.com/unsaved-copy") == true && controller.copyRequest.title == "Copied!", "Copy as cURL commits current edits, resolves variables and confirms clipboard success")
+        precondition(copiedTab.draft.source?.url == originalURL, "Copying never mutates the saved collection request")
+        copiedTab.request.variables = originalVariables; copiedTab.request.setURL(originalURL); controller.displayCurrent()
+        let originalEnvironments = controller.store.environments, originalEnvironmentIndex = controller.store.selectedEnvironment
+        let sourceEnvironment = try Environment(json: ["name": "Staging", "id": "original-id", "metadata": ["preserve": true], "values": [["key": "TOKEN", "value": "demo-token", "enabled": false, "type": "secret"], ["key": "", "value": "unfinished"]]])
+        let activeEnvironment = try Environment(json: ["name": "Production", "values": [JSON]()])
+        controller.store.environments = [sourceEnvironment, activeEnvironment]; controller.store.selectedEnvironment = 1
+        controller.editEnvironments(); controller.environmentIndex = 0; controller.updateEnvironmentEditor(); layout()
+        let environmentButtons = descendants(controller.environmentWindow!.contentView!).compactMap { $0 as? NSButton }
+        precondition(environmentButtons.contains { $0.title == "New" } && !environmentButtons.contains { $0.title == "New environment" }, "Environment creation uses the short New label")
+        let duplicate = environmentButtons.first { $0.title == "Duplicate" }!
+        precondition(duplicate.isEnabled, "Duplicate is available for an existing environment")
+        controller.envName!.stringValue = "Edited staging"
+        duplicate.performClick(nil); layout()
+        let copy = controller.store.environments[controller.environmentIndex]
+        precondition(copy.name == "Edited staging (copy)" && copy.values.count == 2 && !copy.values[0].enabled && copy.values[0].extra["type"] as? String == "secret", "Duplication commits the name and preserves all rows and flags")
+        precondition(copy.original["id"] as? String != "original-id" && (copy.original["metadata"] as? [String: Bool])?["preserve"] == true, "Environment copies have distinct identity and preserve metadata")
+        precondition(controller.store.environments[controller.store.selectedEnvironment] === activeEnvironment, "Duplication preserves the active environment after insertion")
+        copy.values[0].value = "copy-only"
+        precondition(sourceEnvironment.values[0].value == "demo-token", "Editing a duplicate cannot mutate its source")
+        controller.environmentIndex = 0; controller.updateEnvironmentEditor(); duplicate.performClick(nil); layout()
+        precondition(controller.store.environments[controller.environmentIndex].name == "Edited staging (copy 2)", "Repeated duplication chooses a distinct name")
+        controller.closeEnvironmentEditor()
+        controller.store.environments = []; controller.store.selectedEnvironment = -1; controller.editEnvironments(); layout()
+        let emptyEnvironmentButtons = descendants(controller.environmentWindow!.contentView!).compactMap { $0 as? NSButton }
+        let emptyDuplicate = emptyEnvironmentButtons.first { $0.title == "Duplicate" }!
+        precondition(!emptyDuplicate.isEnabled, "Empty environment lists cannot be duplicated")
+        emptyEnvironmentButtons.first { $0.title == "New" }!.performClick(nil); layout()
+        precondition(controller.store.environments.count == 1 && emptyDuplicate.isEnabled, "New creates an environment and enables duplication")
+        controller.closeEnvironmentEditor()
+        controller.store.environments = originalEnvironments; controller.store.selectedEnvironment = originalEnvironmentIndex; controller.refreshEnvironments(); controller.store.save()
+        // Drive native update dialogs with a local URLProtocol fixture: no real
+        // downloads, replacements, or GitHub requests are performed by UI tests.
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [UIReleaseProtocol.self]
+        let updateSession = URLSession(configuration: configuration)
+        let suite = "app.postino.update-checks.\(UUID().uuidString)"
+        let updateDefaults = UserDefaults(suiteName: suite)!
+        defer { updateDefaults.removePersistentDomain(forName: suite); updateSession.invalidateAndCancel() }
+        controller.showWindow(nil); layout()
+        defer { window.orderOut(nil) }
+        var updateBusy = false
+        let updates = AppUpdateController(window: window, defaults: updateDefaults, checker: AppUpdateChecker(session: updateSession),
+            installed: InstalledRelease(info: ["PostinoReleaseTag": "postino-100-1", "PostinoBuildDate": "2026-10-12T10:00:00Z"]),
+            canPresent: { true }, stateChanged: { updateBusy = $0 }, restart: { update in update.discard(); preconditionFailure("Dialog tests must not restart") })
+        func latest(_ tag: String) throws {
+            UIReleaseProtocol.body = try JSONSerialization.data(withJSONObject: ["tag_name": tag, "name": "Test release", "html_url": "https://github.com/Dome015/postino/releases/tag/\(tag)", "published_at": "2026-10-13T12:00:00Z", "draft": false, "prerelease": false, "assets": []])
+        }
+        func dismissUpdate(_ response: NSApplication.ModalResponse) {
+            window.endSheet(window.attachedSheet!, returnCode: response); layout()
+        }
+        try latest("postino-200-1")
+        updates.check(manual: true); precondition(updateBusy)
+        waitFor { window.attachedSheet != nil && !updateBusy }
+        let updateViews = descendants(window.attachedSheet!.contentView!)
+        precondition(updateViews.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "A newer version of Postino is available." }, "Available-update dialog uses the requested message")
+        precondition(Set(updateViews.compactMap { $0 as? NSButton }.map(\.title)) == ["Update and restart", "Remind me later"], "Update dialog provides restart or reminder choices")
+        func captureSheet(_ name: String) throws {
+            let sheet = window.attachedSheet!
+            for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+                sheet.appearance = NSAppearance(named: appearance); layout()
+                let view = sheet.contentView!.superview!
+                let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/\(name)-\(suffix).png"))
+            }
+        }
+        try captureSheet("update-dialog")
+        dismissUpdate(.alertSecondButtonReturn)
+        updates.checkAutomaticallyIfDue(); layout()
+        precondition(UIReleaseProtocol.requests == 1 && window.attachedSheet == nil, "Automatic checks respect the daily interval")
+        try latest("postino-100-1")
+        updateDefaults.set(Date.distantPast, forKey: "PostinoLastUpdateCheck")
+        updates.checkAutomaticallyIfDue(); waitFor { !updateBusy }; layout()
+        precondition(window.attachedSheet == nil, "Automatic checks with no update remain quiet")
+        updates.check(manual: true); waitFor { window.attachedSheet != nil && !updateBusy }
+        precondition(descendants(window.attachedSheet!.contentView!).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "No updates found." }, "Manual checks with no update use the requested message")
+        try captureSheet("no-updates-dialog")
+        dismissUpdate(.alertFirstButtonReturn)
+        let otherSheet = NSAlert(); otherSheet.messageText = "Other action"; otherSheet.beginSheetModal(for: window)
+        try latest("postino-300-1")
+        updateDefaults.set(Date.distantPast, forKey: "PostinoLastUpdateCheck")
+        updates.checkAutomaticallyIfDue(); waitFor { !updateBusy }
+        precondition(window.attachedSheet === otherSheet.window, "Automatic notifications must not interrupt another sheet")
+        dismissUpdate(.alertFirstButtonReturn)
+        waitFor { window.attachedSheet != nil }
+        precondition(descendants(window.attachedSheet!.contentView!).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "A newer version of Postino is available." }, "Deferred notifications appear after the existing sheet closes")
+        dismissUpdate(.alertSecondButtonReturn)
         print("Passed JSON lexer, large viewport, cancellation, live highlighting, sidebar resizing, compact controls, body modes, method tabs, bounded scrolling, search, UTF-8 continuity, and disk JSON context checks")
     }
 }

@@ -139,7 +139,7 @@ extension MainWindow {
             let selected = (outline.selectedTreeItem as? Collection) ?? insertionContainer(for: outline.selectedTreeItem)?.collection
             let insertion = selected.flatMap { selected in store.collections.firstIndex { $0 === selected }.map { $0 + 1 } } ?? store.collections.count
             store.collections.insert(collection, at: insertion); selectedCollection = collection
-            collapsedFolders.remove(ObjectIdentifier(collection)); reloadSidebar(selecting: collection)
+            expandedFolders.insert(ObjectIdentifier(collection)); reloadSidebar(selecting: collection)
         } else {
             guard let target = insertionContainer(for: outline.selectedTreeItem) else { return }
             let selection = outline.selectedTreeItem as? CollectionNode
@@ -202,7 +202,7 @@ extension MainWindow {
         tabs.removeAll { tab in affected.contains { $0 === tab } }
         if let current, affected.contains(where: { $0 === current }) {
             self.current = tabs.first
-            if tabs.isEmpty { newRequest() } else { displayCurrent() }
+            displayCurrent()
         }
         store.save(); reloadSidebar(); refreshTabBar()
     }
@@ -225,12 +225,13 @@ extension MainWindow {
     }
     func revealTreeItem(_ node: CollectionNode) {
         guard let location = CollectionTree.location(of: node, in: store.collections) else { return }
-        collapsedFolders.remove(ObjectIdentifier(location.container.collection))
+        expandedFolders.insert(ObjectIdentifier(location.container.collection))
         var folder = location.container.folder
         while let parent = folder {
-            collapsedFolders.remove(ObjectIdentifier(parent))
+            expandedFolders.insert(ObjectIdentifier(parent))
             folder = CollectionTree.location(of: parent, in: store.collections)?.container.folder
         }
+        sidebarMode = 0; sidebarSegment.selectedSegment = 0
         reloadSidebar(selecting: node)
         if outline.row(forItem: node) < 0, !search.stringValue.isEmpty { search.stringValue = ""; reloadSidebar(selecting: node) }
         let row = outline.row(forItem: node); if row >= 0 { outline.scrollRowToVisible(row) }

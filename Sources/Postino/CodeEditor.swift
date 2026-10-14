@@ -59,7 +59,7 @@ enum JSONSyntax {
     }
 }
 
-final class EditorTextView: NSTextView {
+final class EditorTextView: CodeEditingTextView {
     var responseFinder: NSTextFinder?
     var drawFindHighlights: (() -> Void)?
     override func performFindPanelAction(_ sender: Any?) {
@@ -81,7 +81,7 @@ final class EditorTextView: NSTextView {
     override func scrollToBeginningOfDocument(_ sender: Any?) { if let jumpToBoundary { jumpToBoundary(false) } else { super.scrollToBeginningOfDocument(sender) } }
 }
 
-final class CodeEditor: NSView, NSTextViewDelegate {
+final class CodeEditor: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     let text = EditorTextView(); let scroll = NSScrollView()
     var selectionChanged: (() -> Void)?
     var viewportChanged: (() -> Void)?
@@ -98,12 +98,13 @@ final class CodeEditor: NSView, NSTextViewDelegate {
     init(editable: Bool) {
         super.init(frame: .zero)
         wantsLayer = true; layer?.cornerRadius = 8; layer?.masksToBounds = true
-        text.isEditable = editable; text.isRichText = false; text.allowsUndo = editable
+        text.isEditable = editable; text.isRichText = false; text.allowsUndo = editable; text.editingAidsEnabled = editable
         text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticDashSubstitutionEnabled = false; text.isAutomaticSpellingCorrectionEnabled = false; text.isContinuousSpellCheckingEnabled = false; text.isGrammarCheckingEnabled = false
+        text.isAutomaticTextReplacementEnabled = false; text.isAutomaticLinkDetectionEnabled = false; text.isAutomaticDataDetectionEnabled = false; text.isAutomaticTextCompletionEnabled = false
         text.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular); text.textColor = .labelColor; text.backgroundColor = editorColor
         text.textContainerInset = NSSize(width: 10, height: 8); text.isVerticallyResizable = true; text.isHorizontallyResizable = false; text.autoresizingMask = [.width]
         text.textContainer?.widthTracksTextView = true; text.layoutManager?.allowsNonContiguousLayout = true
-        text.minSize = .zero; text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude); text.usesFindBar = true; text.isIncrementalSearchingEnabled = true; text.delegate = self
+        text.minSize = .zero; text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude); text.usesFindBar = true; text.isIncrementalSearchingEnabled = true; text.delegate = self; text.textStorage?.delegate = self
         text.setAccessibilityLabel(editable ? "Request body" : "Response body")
         scroll.backgroundColor = editorColor; scroll.drawsBackground = true; scroll.documentView = text; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         scroll.contentView.postsBoundsChangedNotifications = true
@@ -126,10 +127,20 @@ final class CodeEditor: NSView, NSTextViewDelegate {
     func textViewDidChangeSelection(_ notification: Notification) { selectionChanged?() }
     func textDidChange(_ notification: Notification) {
         guard !applying else { return }
-        // Editing shifts temporary attribute ranges; clear the bounded token set before repainting.
-        text.layoutManager?.removeTemporaryAttribute(.foregroundColor, forCharacterRange: NSRange(location: 0, length: (text.string as NSString).length))
-        painted = NSRange(location: 0, length: 0)
+        // Keep the previous colors until the next token set is ready. Clearing
+        // here creates an uncolored frame on every keystroke.
         changed?(text.string); scheduleHighlight()
+    }
+    func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions, range editedRange: NSRange, changeInLength delta: Int) {
+        guard !applying, editedMask.contains(.editedCharacters), painted.length > 0 else { return }
+        let oldEnd = NSMaxRange(editedRange) - delta
+        func shifted(_ position: Int, end: Bool) -> Int {
+            if position < editedRange.location { return position }
+            if position >= oldEnd { return position + delta }
+            return end ? NSMaxRange(editedRange) : editedRange.location
+        }
+        let start = max(0, shifted(painted.location, end: false)), end = min(textStorage.length, shifted(NSMaxRange(painted), end: true))
+        painted = NSRange(location: min(start, textStorage.length), length: max(0, end - start))
     }
     private func clearHighlight() {
         if let manager = text.layoutManager {

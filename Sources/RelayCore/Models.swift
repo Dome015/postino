@@ -6,7 +6,7 @@ public struct Pair {
     public init(_ key: String = "", _ value: String = "", enabled: Bool = true, extra: JSON = [:]) { self.key = key; self.value = value; self.enabled = enabled; self.extra = extra }
     public init(json: JSON) { key = json["key"] as? String ?? ""; value = Self.string(json["value"]); enabled = !(json["disabled"] as? Bool ?? false) && (json["enabled"] as? Bool ?? true); extra = json }
     public static func string(_ x: Any?) -> String { if let s = x as? String { return s }; if let x = x, !(x is NSNull) { return String(describing: x) }; return "" }
-    public var json: JSON { var j = extra; j["key"] = key; j["value"] = value; j["disabled"] = !enabled; return j }
+    public var json: JSON { var j = extra; j["key"] = key; j["value"] = value; j["disabled"] = !enabled; if j["enabled"] != nil { j["enabled"] = enabled }; return j }
 }
 public final class RequestItem {
     public let id: String

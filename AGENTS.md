@@ -1,6 +1,6 @@
 # Working on Postino
 
-This document is the technical reference and working guide for this repository. Keep `README.md` short and aimed at people discovering and using the app; put architecture, implementation constraints, build instructions, tests, and maintenance details here. Follow explicit user instructions when they change the product requirements, and update this guide when the implementation changes.
+This document is the technical reference and working guide for this repository. Keep `README.md` short and aimed at people discovering and using the app; only update it when the user explicitly requests a README update. Put architecture, implementation constraints, build instructions, tests, and maintenance details here. Follow explicit user instructions when they change the product requirements, and update this guide when the implementation changes.
 
 ## Product and scope
 
@@ -14,12 +14,14 @@ The app name is **Postino**. Earlier names include Postauomo and Relay. Several 
 | --- | --- |
 | `Sources/Postino/main.swift` | Application entry point. |
 | `Sources/Postino/Application.swift` | App lifecycle, menus, keyboard shortcuts, About panel, quit confirmation, modal-safe run-loop continuations. |
+| `Sources/Postino/AppUpdateController.swift` | Daily/manual update checks, native notifications, download progress, and restart handoff. |
 | `Sources/Postino/MainWindow.swift` | Window composition, request tabs, draft coordination, send/cancel, response presentation, import/export, clipboard feedback. |
 | `Sources/Postino/Components.swift` | Shared native buttons, popup menus, segmented controls, colors, layout helpers, and request tabs. |
 | `Sources/Postino/ControlBar.swift` | Background bands, flat capsule surfaces, control chrome, centered tree cells, resize-divider drawing. |
 | `Sources/Postino/TextInputs.swift` | Shared text/search fields and native field-editor positioning. |
 | `Sources/Postino/PairEditor.swift` | Configurable table editor for headers, parameters, environments, forms, and credentials. |
 | `Sources/Postino/CodeEditor.swift` | Native text editor, JSON tokenization/highlighting, selection callbacks, and Find routing. |
+| `Sources/Postino/CodeEditingTextView.swift` | Request-body bracket/quote completion, indentation, and native undo-preserving edits. |
 | `Sources/Postino/ResponseReader.swift` | Bounded UTF-8 response viewport, scrolling, seeking, and JSON context. |
 | `Sources/Postino/ResponseFind.swift` | Full-file read-only native Find client and sparse UTF-16 search index. |
 | `Sources/Postino/CollectionSidebar.swift` | Collection tree responder actions, clipboard, context menus, creation, selection, drag/drop, and insertion mapping. |
@@ -29,7 +31,10 @@ The app name is **Postino**. Earlier names include Postauomo and Relay. Several 
 | `Sources/RelayCore/RequestDraft.swift` | Independent open drafts, dirty-state detection, and save snapshots. |
 | `Sources/RelayCore/CollectionTree.swift` | Tree moves, ordering, cycle prevention, and inheritance refresh. |
 | `Sources/RelayCore/HTTP.swift` | Variable resolution, request/auth/body construction, streamed transfers, and cancellation. |
+| `Sources/RelayCore/CurlExporter.swift` | Shell-safe executable cURL export of the current draft using request-builder URL/header/auth semantics. |
 | `Sources/RelayCore/ResponseFile.swift` | Buffered disk operations, JSON formatting, UTF-8 paging helpers, and byte search. |
+| `Sources/RelayCore/AppUpdates.swift` | Public GitHub release checks and installed-release comparison. |
+| `Sources/RelayCore/AppUpdateInstaller.swift` | Download, checksum, bundle/signature/architecture validation, staging, and helper launch. |
 | `Tests/RelayCoreTests/RelayCoreTests.swift` | XCTest counterparts for core behavior. |
 | `scripts/` | Direct builds, regression runners, local fixture API, and icon generation. |
 | `Fixtures/` | Postman collection/environment samples. |
@@ -99,7 +104,7 @@ The owner launches **Actions → Release Postino → Run workflow** and supplies
 
 1. Checks out the source on `macos-26`.
 2. Reads the shared version file and selects `/Applications/Xcode_26.4.1.app/Contents/Developer` through `DEVELOPER_DIR`.
-3. Runs `scripts/build.sh` and `scripts/test-ui.sh`.
+3. Runs `scripts/build.sh`, `scripts/test-ui.sh`, `scripts/test-editor.sh`, `scripts/test-updates.sh`, and `scripts/test-curl.sh`.
 4. Verifies the release signature and prints `BuildInfo.json`.
 5. Packages `Postino.app` with `ditto -c -k --sequesterRsrc --keepParent`.
 6. Creates a release at the checked-out SHA with the supplied title, generated notes, an automatically generated `postino-<run-id>-<attempt>` tag, and the app ZIP attached.
@@ -107,6 +112,16 @@ The owner launches **Actions → Release Postino → Run workflow** and supplies
 `GITHUB_TOKEN` receives `contents: write` for release creation. The workflow does not need a personal access token. The pinned Xcode must exist on the runner; absence should fail clearly rather than silently fall back.
 
 The current signatures are ad hoc, not Developer ID signatures, and the build does not notarize the app. Downloaded releases can trigger Gatekeeper on first launch. Proper distribution signing and notarization require separate Apple credentials and workflow changes; do not describe the current release as notarized.
+
+### App update checks and installation
+
+Postino anonymously checks `https://api.github.com/repos/Dome015/postino/releases/latest` at launch/activation when at least 24 hours have passed since the last attempt. An hourly timer covers long-running sessions. **Postino → Check for updates…** in the macOS menu bar bypasses that interval; do not put update controls in the window toolbar. Demo mode never starts automatic checks. Network failures and no-update results stay quiet automatically; manual checks show errors or exactly “No updates found.” Do not send workspace data or GitHub credentials.
+
+Release titles are arbitrary and tags are `postino-<run-id>-<attempt>`, so do not compare either as semantic versions. `scripts/build.sh` embeds UTC `PostinoBuildDate`; CI also supplies `POSTINO_RELEASE_TAG` to embed `PostinoReleaseTag` matching the published tag. Matching tags mean current even though publication happens after compilation. Otherwise only releases published after the installed build are offered, avoiding downgrades of newer local builds. Missing identity/date metadata must not falsely report “up to date.”
+
+The available-update sheet says “A newer version of Postino is available.” and offers **Update and restart** / **Remind me later**. Automatic reminders follow the daily cadence, including long-running sessions; manual checks can show the release again immediately. Notifications wait until any existing sheet closes. The update action downloads the matching `Postino-<run-id>-<attempt>.zip`, verifies GitHub's SHA-256 digest and size, extracts a matching bundle ID/release tag, checks the native architecture and ad hoc signature, and stages a copy beside the installed app. This requires a writable app and parent directory; no privileged installer is used. Ad hoc signature validation checks bundle integrity, not Developer ID authenticity; download authenticity relies on HTTPS to the fixed GitHub repository and its digest.
+
+Only after normal Save/Discard/Cancel confirmation and asynchronous workspace persistence does `AppDelegate` start a detached copy of `Resources/InstallUpdate.sh`. Cancelling quit discards the staged update. The helper waits for the old PID to exit, locks replacement, keeps the previous app as a backup, replaces the bundle and relaunches. Replacement or launch-command failure restores the backup and displays an error. Tests use disposable bundles and stub only final GUI launch/alert commands; never use the real workspace or installed app for updater checks. Keep the helper packaged in release and UI-check bundles. `CryptoKit` is an Apple system framework used for streaming SHA-256; no third-party updater dependency is required.
 
 ## Verification
 
@@ -131,10 +146,12 @@ The fixture listens on `127.0.0.1:18765`. Core checks cover import/export metada
 
 | Command | Coverage |
 | --- | --- |
-| `./scripts/test-ui.sh` | Native control geometry, capsule groups, flat surfaces, bands, sidebar resizing, method/body-format labels, JSON highlighting and cancellation, bounded scrolling, UTF-8 continuity, search selection, and copy feedback. |
-| `./scripts/test-editor.sh` | All five shared table configurations, resizing, row focus, explicit addition, checkbox stability, inline deletion, and multipart file metadata. |
-| `./scripts/test-sidebar.sh` | Native tree creation/selection, filtered insertion, saving moved drafts, workspace persistence, copy/cut/paste, fresh identities, duplicate, and deletion of open drafts. |
-| `./scripts/test-lifecycle.sh` | Real AppKit processes: clean close, Save/Discard/Cancel through window close and Quit, multiple dirty tabs, large-workspace close latency, closing with the environment window open, and native tree Edit-menu routing. |
+| `./scripts/test-ui.sh` | Empty-workspace startup/last-tab transitions and light/dark layout captures, native control geometry, capsule groups, flat surfaces, bands, sidebar resizing, method/body-format labels, JSON highlighting and cancellation, bounded scrolling, UTF-8 continuity, search selection, copy feedback, and update dialogs/cadence/deferred notifications. |
+| `./scripts/test-updates.sh` | Release identity/date comparison, mocked public API/offline/error handling, real ZIP checksum/bundle validation, staging, helper replacement, and rollback in disposable app copies. |
+| `./scripts/test-curl.sh` | Execute exported cURL commands against a disposable loopback echo server; verify auth, variables, URL encoding, headers, shell quoting, and supported body modes. |
+| `./scripts/test-editor.sh` | All five shared table configurations, resizing, row focus/add/delete, multi-row drag order, clipboard metadata/responder routing, editing aids, native undo/redo, and stable live highlighting. |
+| `./scripts/test-sidebar.sh` | Ephemeral history, first-save placement, collapsed defaults, native tree creation/selection, filtered insertion, saving moved drafts, workspace persistence, copy/cut/paste, fresh identities, duplicate, and deletion of open drafts. |
+| `./scripts/test-lifecycle.sh` | Real AppKit processes: close/Quit with no open requests, clean close, Save/Discard/Cancel through window close and Quit, cancelled update restart/staging cleanup, multiple dirty tabs, large-workspace close latency, closing with the environment window open, and native tree Edit-menu routing. |
 | `./scripts/test-tree.sh` | Core moves/reordering, inheritance, draft preservation, cycle rejection, and Postman round trips. |
 | `./scripts/test-find.sh` | Both native Find bars, request replacement, read-only response actions, UTF-16/UTF-8 mapping, cross-chunk matches, full-file navigation/wraparound, and queries entered while indexing a 128 MB response. |
 | `PROFILE_FIND=1 ./scripts/test-find.sh` | The Find checks with timing and peak-memory measurements. |
@@ -163,9 +180,17 @@ Avoid launching a second normal app instance for checks: workspace initializatio
 
 Keep transport and interchange logic in the Foundation-only `RelayCore` module, and native views/controllers in `Sources/Postino`. UI mutations belong on the main thread. Disk processing, formatting, indexing, and expensive highlighting should stay off the main thread.
 
-Open tabs own independent `RequestDraft` instances. Editing a tab must not silently mutate a saved collection entry. `isDirty` drives the tab dot and Save state; save updates the collection, and closing a modified tab or quitting offers Save, Discard, or Cancel. Exports contain saved entries, so unsaved drafts are not implicitly exported.
+Launch with no open request tabs, even when collections already exist. With no current request, hide the tab strip and both request/response panes; show the centered ready-to-go postman, **Welcome!**, “Create or open a request to get started.”, and the shared primary **New request** button. Match the response placeholder's 15 pt semibold title and 12 pt secondary description; keep both centered. The workspace action is larger than standard controls: 160 × 40 pt with 14 pt semibold text and capsule corners. Closing or deleting the last open request returns to this empty workspace without creating a replacement draft. Keep request-specific menu actions disabled until a request opens. Empty-state artwork is decorative; the message and button remain accessible.
+
+Open tabs own independent `RequestDraft` instances. Editing a tab must not silently mutate a saved collection entry. `isDirty` drives the tab dot and close/quit confirmation; `canSave` also enables explicit saving of ephemeral history tabs; save updates the collection, and closing a modified tab or quitting offers Save, Discard, or Cancel. Exports contain saved entries, so unsaved drafts are not implicitly exported.
 
 Preserve request/node identity during moves. `CollectionTree.move` adjusts insertion indexes when moving within a container, prevents cycles, and refreshes inherited auth/variables. UI drop indexes must map correctly through filtered trees. Moving an open request must preserve its draft and future save destination.
+
+History opens an independent ephemeral draft with a fresh request identity. Until explicitly saved, it shows no dirty dot, document-edited indicator, or close/quit warning, including after edits. Explicit Save inserts a new top-level request in the original request's current collection and converts the tab to ordinary saved-draft behavior. History stores `sourceRequestID` alongside the snapshot so the origin survives reloads, renames, and moves. Legacy entries resolve only an unambiguous name/method/URL match; missing origins fall back to the normal first-save placement rules. Never overwrite the original entry when saving history.
+
+Toolbar-created requests choose a destination at first Save: the first expanded collection in tree order, otherwise the first collection, otherwise a new **My requests** collection. Always insert at the collection root, independently of the selected folder or request. Reveal, select, and scroll to the inserted request, switching from History to Collections and clearing a filter if needed. Context-menu Add request still creates directly in its captured collection/folder.
+
+Collections and folders start collapsed at launch and import. Track expanded containers for the current session, preserving user choices across reloads and sidebar-mode changes; filtering temporarily expands matching branches and clearing it restores the user's choices. Collection imports clear the active filter so their branches remain collapsed. Revealing a new item expands only its ancestor chain.
 
 `HistoryEntry` wraps history dictionaries in `NSObject` for the native outline/table data source. Preserve that stable object representation; passing unstable bridged dictionaries previously caused a history-tab crash.
 
@@ -232,22 +257,27 @@ The current design is **flat**, with solid fills and rounded capsule controls. E
 
 - Reuse `RelayButton`, `RelayPopup`, `RelaySegments`, shared inputs, `ControlSurface`, and `PairEditor` rather than creating per-screen variants.
 - Common controls are **28 pt** high with **14 pt** capsule radii and **8 pt** vertical gaps. Maintain consistent inset/gap relationships within each band.
-- The main window uses a native unified `NSToolbar`, a hidden window title, and a transparent title bar over `bandDarkColor`. Keep AppKit's standard window buttons, drag region, and full-screen behavior. Toolbar actions are flat custom views with native item borders disabled: New request, New collection, Save, and the environment controls. Host each item's custom view in a neutral `NSView` so AppKit does not replace the shared button bezels. The sidebar starts with Collections/History and search, without the logo/name block.
+- The main window uses a native unified `NSToolbar`, a hidden window title, and a transparent title bar over `bandDarkColor`. Keep AppKit's standard window buttons, drag region, and full-screen behavior. Toolbar actions are flat custom views with native item borders disabled: New request, New collection, and the environment controls. Save sits immediately to the right of Send in the method/URL row and retains draft-dependent enablement and ⌘S. Host each item's custom view in a neutral `NSView` so AppKit does not replace the shared button bezels. The sidebar starts with Collections/History and search, without the logo/name block. Use no extra bottom padding on the search header; native source-list padding supplies the gap before the tree. Update checks belong only in the macOS Postino menu.
 - Alternate `bandLightColor` and `bandDarkColor` for major vertical sections. Request tabs use `bandDarkColor` above the lighter request controls, following the same band pattern. Both thin draggable split dividers use `ResizeSplitView` and `controlFillColor`, matching buttons/dropdowns in either appearance. Full-width one-point dividers below the toolbar and above the shared footer use the same fill; keep ordinary section boundaries free of extra separator rules.
 - Buttons use text or an icon, not both. Primary Send text is opaque white. Keep keyboard behavior, focus rings, tooltips, and accessibility labels intact.
 - Request tabs contain full method names, a request title, a dirty dot when needed, and an internal close button. Rename through the context menu; do not restore the separate rename bar.
 - `RequestTabScrollView` maps the dominant wheel/trackpad axis to horizontal movement, retaining precise deltas and momentum events. Its clip view locks vertical position, both elasticities are disabled, and the horizontal scrollbar overlays the strip so it cannot clip the 28 pt tabs. Preserve this behavior when revealing a selected tab or resizing the window.
-- Body is the first/default request section. Body-format popups must fit every title without truncation.
+- Body is the first/default request section. Its format dropdown sits beside the section pills only while Body is selected; the authentication dropdown occupies that same position only while Authorization is selected. Hide the neutral dropdown host together with its control chrome. Body-format titles must fit without truncation. Binary-file selection stays in the body pane; raw bodies have no extra selector row above the editor.
 - JSON editors have no border and share `inputBackgroundColor` with text inputs.
+- Editable request bodies auto-pair brackets/quotes, wrap selections, skip existing closers, delete empty pairs, indent newlines/closing delimiters, and indent/outdent lines with Tab/Shift-Tab. Infer existing spaces/tabs (two spaces by default). Keep strings/escaped quotes and IME composition intact; large pastes remain literal. Use native `NSTextView` insertion/undo and keep response editors read-only.
+- Live highlighting retains temporary colors while replacement viewport tokens are computed. Track painted-range shifts through `NSTextStorageDelegate` and replace colors together on the main thread when the current generation is ready. Never clear all colors on each keystroke; keep expensive lexing on the background queue.
 - Light mode distinguishes surfaces through flat fills: white editing surfaces, pale-gray content bands, darker-gray chrome, and medium-gray controls. Keep controls borderless; do not add capsule outlines to increase contrast. Use the darker light-mode method/syntax inks and `primaryFillColor` for readable white Send text; retain the dark-mode palette. Secondary button titles use explicit semantic text colors, including disabled state, so toolbar text stays legible.
 - Keep text and placeholders vertically centered before and after focus. Table value fields and row actions must remain within the viewport at narrow sizes.
 - `PairEditor` owns shared row addition/removal: a small plus button at the top right, inline trash buttons, and focus of a newly added row. Toggling enabled state must not add rows. Preserve empty-table behavior and last-row deletion.
+- Table drag handles support native multi-row selection and local drag reordering, preserving relative order. Owner/revision tokens reject cross-table and stale drops. Selected rows use ⌘C/⌘X/⌘V and Delete/⌘Delete, plus context menus. Cut removes rows only after successful clipboard writing. Paste inserts after the selection, or appends to an empty/unselected table. A versioned JSON clipboard type preserves flags and unknown/file metadata across table configurations; tab-separated text supports external paste. Keep current enabled/disabled flags consistent in `Pair.json`. Cell editors retain normal text shortcuts; Escape returns to row selection and Return edits the selected key. Guard row deletion while the native field editor is active.
+- Environment management labels creation **New** and offers **Duplicate** beside it for an existing environment. Commit pending name/cell edits, deep-copy all rows (including unfinished ones), values and metadata, regenerate identity, and select the copy in the editor. Use `Name (copy)` then `Name (copy 2)` for repeated copies. Preserve the identity of the active app environment when inserting the copy.
 - Table headers have no vertical separators. Environment tables match their surrounding window background.
 - Collection/folder names toggle expansion along with disclosure arrows. Do not add folder icons back to the tree. Keep sidebar segments fitted to their contents, with vertically centered selected rows.
 - Tree editing follows the native responder chain: ⌘C/⌘X/⌘V for copy/cut/paste, ⌘Delete for confirmed deletion, ⌘D for duplicate, and Return for rename. Text inputs retain their own editing shortcuts. Copy/paste generates fresh identities and preserves Postman metadata; Cut defers removal until a valid Paste and preserves open drafts/inheritance on moves. Reject folder cycles, invalidate cut intent when the pasteboard changes, and restore tree focus after mutations. Deletion closes affected saved-request tabs and explicitly warns before discarding dirty drafts.
 - One shared footer holds import/export actions. Avoid collection/request counters, paging controls, and redundant response-format labels.
 - Center the response placeholder artwork, title, and wrapped message as one group. Use the open empty mailbox (`ResponseEmpty.png`) before sending, and the fallen postman (`ResponseError.png`) for transport/validation errors. Hide artwork while receiving; actual HTTP responses, including error statuses, retain their response body. Do not restore shortcut hints below the placeholder. Let the artwork shrink when the response pane is short, and keep full error text available as a tooltip.
 - **Copy body** provides a visible, accessible “Copied!” confirmation for approximately **2.5 seconds**, rather than only a momentary button state change.
+- **Copy as cURL** sits beside the request sections and is also available through File → Copy as cURL (⇧⌘C). Commit pending editors, snapshot the unsaved draft/environment on the main thread, and generate the command on a worker before writing the clipboard. Reuse `RequestBuilder` URL/header/auth handling; resolve collection/folder/environment variables and omit disabled rows. Raw text uses `--data-raw`, files use `--data-binary`, multipart fields use `--form-string` and quoted file references without temporary uploads. Shell quoting must prevent request content from executing substitutions or reading unexpected files. Report unrepresentable values (null bytes, multipart names containing `=`, HEAD with a body) rather than silently altering them. Copying changes neither saved requests nor JSON storage. Keep the visible “Copied!” confirmation for 2.5 seconds.
 - Sidebar width is remembered. Both sidebar/main and request/response splits must remain draggable.
 
 Native menu shortcuts include ⌘N (new request), ⌘S (save), ⌘Return (send), ⌘I (import), ⇧⌘E (export collection), ⇧⌘S (save response), and **⌥⌘E** (manage environments). Preserve native Find shortcuts: ⌘F, ⌘G/⇧⌘G, ⌘E (use selection for Find), and ⌥⌘F (Find and Replace where editable).
@@ -261,6 +291,7 @@ The approved logo is a cartoon postman's face and gloved hand holding a letter. 
 - `Resources/DockIcon.png`: 1024 px square source for the Dock icon.
 - `Resources/PostinoFace.icns`: active multiresolution app icon declared in `Info.plist`.
 - `Resources/DockIcon.prompt.md`: logo-generation/design notes.
+- `Resources/WorkspaceEmpty.png`: transparent ready-to-go postman for the no-open-requests workspace; generated with the built-in imagegen tool. Keep the satchel's broad fold-over flap, single oval gold clasp, rounded body/gusset, and the character's face, cap, uniform and side-by-side waist buttons consistent with `ResponseError.png`. Preserve both feet planted, a cheerful expression, one held letter and bold bag contours. Prompt retained in `Resources/WorkspaceIllustration.prompt.md`; package it in the app and UI-check bundle.
 - `Resources/ResponseEmpty.png`, `Resources/ResponseError.png`: transparent response-state illustrations; generated with the built-in imagegen tool. Prompts are retained in `Resources/ResponseIllustrations.prompt.md`. Package both in the app and UI-check bundle.
 
 Run `./scripts/build-icon.sh` to regenerate all standard/Retina icon representations from 16–1024 px. macOS 26 icon services apply the system mask, margins, and material. About loads the multiresolution icon directly. Validate the actual Dock result when changing artwork or packaging; a cached old icon or a low-resolution representation can differ from the resource preview.

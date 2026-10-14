@@ -7,6 +7,7 @@ struct FindChecks {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.regular)
         let controller = MainWindow(), window = controller.window!
+        controller.newRequest()
         func memory(_ phase: String) {
             guard ProcessInfo.processInfo.environment["PROFILE_FIND"] == "1" else { return }
             var usage = rusage(); getrusage(RUSAGE_SELF, &usage)

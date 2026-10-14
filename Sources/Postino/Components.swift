@@ -15,7 +15,8 @@ final class FlatButtonCell: NSButtonCell {
         var fill = button.style == .primary ? primaryFillColor : controlFillColor
         if isHighlighted { fill = fill.blended(withFraction: 0.14, of: .black) ?? fill }
         if !isEnabled { fill = fill.blended(withFraction: 0.45, of: bandLightColor) ?? fill }
-        fill.setFill(); NSBezierPath(roundedRect: frame, xRadius: 14, yRadius: 14).fill()
+        let radius = min(frame.width, frame.height) / 2
+        fill.setFill(); NSBezierPath(roundedRect: frame, xRadius: radius, yRadius: radius).fill()
     }
 }
 

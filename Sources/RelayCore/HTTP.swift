@@ -12,7 +12,7 @@ public enum RequestBuilder {
         }
         throw RelayError.message("Variables contain a circular reference.")
     }
-    public static func build(_ item: RequestItem, environment: [String: String] = [:], timeout: TimeInterval = 120) throws -> (URLRequest, URL?) {
+    static func baseRequest(_ item: RequestItem, environment: [String: String], timeout: TimeInterval) throws -> URLRequest {
         let vars = item.variables.merging(environment) { _, new in new }
         func resolve(_ s: String) throws -> String { try Self.resolve(s, variables: vars) }
         let raw = try resolve(item.url.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? item.url)
@@ -30,6 +30,12 @@ public enum RequestBuilder {
         case "apikey": if av["in"] == "query" { var qi = components.queryItems ?? []; qi.append(URLQueryItem(name: av["key"] ?? "", value: av["value"] ?? "")); components.queryItems = qi; request.url = components.url } else { request.setValue(av["value"] ?? "", forHTTPHeaderField: av["key"] ?? "X-API-Key") }
         default: throw RelayError.message("Imported \(type) authentication is preserved, but is not executed. Choose Bearer, Basic, API key, or set an Authorization header.")
         }
+        return request
+    }
+    public static func build(_ item: RequestItem, environment: [String: String] = [:], timeout: TimeInterval = 120) throws -> (URLRequest, URL?) {
+        var request = try baseRequest(item, environment: environment, timeout: timeout)
+        let vars = item.variables.merging(environment) { _, new in new }
+        func resolve(_ s: String) throws -> String { try Self.resolve(s, variables: vars) }
         var bodyFile: URL?
         if item.bodyMode == "raw", !item.body.isEmpty { request.httpBody = Data(try resolve(item.body).utf8); if request.value(forHTTPHeaderField: "Content-Type") == nil { let options = ((item.original["request"] as? JSON)?["body"] as? JSON)?["options"] as? JSON; let language = (options?["raw"] as? JSON)?["language"] as? String; request.setValue(language == "json" || item.body.trimmingCharacters(in: .whitespacesAndNewlines).first.map({ $0 == "{" || $0 == "[" }) == true ? "application/json" : "text/plain", forHTTPHeaderField: "Content-Type") } }
         else if item.bodyMode == "urlencoded" { var c = URLComponents(); c.queryItems = try item.form.filter { $0.enabled && !$0.key.isEmpty }.map { URLQueryItem(name: try resolve($0.key), value: try resolve($0.value)) }; request.httpBody = Data((c.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8); request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type") }
