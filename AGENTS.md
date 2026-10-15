@@ -41,7 +41,7 @@ The app name is **Postino**. Earlier names include Postauomo and Relay. Several 
 | `Fixtures/` | Postman collection/environment samples. |
 | `Resources/` | Approved logo, Dock artwork, multiresolution icon, and design prompt. |
 | `Info.plist` | App identity, versions, minimum macOS, icon declaration, and transport settings. |
-| `.github/workflows/release.yml` | Manually triggered macOS build, UI checks, packaging, and GitHub release creation. |
+| `.github/workflows/release.yml` | Manually triggered macOS build, packaging, and GitHub release creation. |
 
 ## Build and toolchain
 
@@ -105,7 +105,7 @@ The owner launches **Actions → Release Postino → Run workflow** and supplies
 
 1. Checks out the source on `macos-26`.
 2. Reads the shared version file and selects `/Applications/Xcode_26.4.1.app/Contents/Developer` through `DEVELOPER_DIR`.
-3. Runs `scripts/build.sh`, `scripts/test-ui.sh`, `scripts/test-editor.sh`, `scripts/test-variables.sh`, and `scripts/test-updates.sh`, installs Python 3.13 for the disposable fixture, then runs `python3 scripts/curl-startup-checks.py` and `scripts/test-curl.sh`.
+3. Runs `scripts/build.sh`. Regression tests are run locally, not in the release workflow.
 4. Verifies the release signature and prints `BuildInfo.json`.
 5. Packages `Postino.app` with `ditto -c -k --sequesterRsrc --keepParent`.
 6. Creates a release at the checked-out SHA with the supplied title, generated notes, an automatically generated `postino-<run-id>-<attempt>` tag, and the app ZIP attached.
