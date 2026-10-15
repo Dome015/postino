@@ -5,6 +5,7 @@ import sys
 from email import policy
 from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -38,6 +39,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-with open(sys.argv[1], "w") as port_file:
-    port_file.write(str(server.server_port))
+port_file = Path(sys.argv[1])
+pending_port = port_file.with_suffix(".tmp")
+pending_port.write_text(str(server.server_port) + "\n", encoding="ascii")
+pending_port.replace(port_file)
+print(f"cURL fixture listening on 127.0.0.1:{server.server_port}", flush=True)
 server.serve_forever()

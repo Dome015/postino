@@ -12,6 +12,7 @@ final class RequestTab {
     init(_ request: RequestItem, saved: Bool = true, ephemeral: Bool = false) { draft = RequestDraft(request, saved: saved, ephemeral: ephemeral) }
 }
 final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSMenuDelegate, NSToolbarDelegate, NSMenuItemValidation {
+    let variableContext = VariablePreviewContext()
     let store = Workspace(); var tabs: [RequestTab] = []; var current: RequestTab?; var sidebarMode = 0; var selectedCollection: Collection?
     let outline = CollectionOutlineView(); let search = InputSearchField(); let env = RelayPopup(); let method = RelayPopup(); let url = InputField(); let send = RelayButton(frame: .zero); let tabBar = NSView(); let tabScroll = RequestTabScrollView(); let save = RelayButton(frame: .zero)
     let editorWorkspace = NSView(); let emptyWorkspace = Surface(bandLightColor)
@@ -136,6 +137,12 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
         responseFind.title = "Find…"; responseFind.target = self; responseFind.action = #selector(showResponseFind); responseFind.toolTip = "Find in the entire response (⌘F)"
         let responseTools = padded(stack([responseSegment, pretty, spacer(), responseFind, copyResponse, saveResponse]), x: 10, y: 0); responseTools.heightAnchor.constraint(equalToConstant: 28).isActive = true
         responseReader.failed = { [weak self] message in self?.footer.stringValue = message }
+        variableContext.save = { [weak self] name, value, id, completion in
+            guard let self else { completion(false); return }
+            self.saveEnvironmentVariable(name, value: value, environmentID: id, completion: completion)
+        }
+        url.variableContext = variableContext; body.variableContext = variableContext
+        for editor in [params, headers, form, authFields] { editor.variableContext = variableContext }
         pin(response, in: responseHost, inset: 10, verticalInset: 8)
         pin(emptyResponse, in: responseHost)
         emptyTitle.font = .systemFont(ofSize: 15, weight: .semibold); emptyTitle.maximumNumberOfLines = 2
@@ -230,8 +237,12 @@ final class MainWindow: NSWindowController, NSOutlineViewDataSource, NSOutlineVi
     }
     func draftChanged() { if !updating { refreshTabBar() } }
     func commitFields() { window?.makeFirstResponder(nil); if let r = current?.request { if r.url != url.stringValue { r.setURL(url.stringValue) } } }
-    func refreshEnvironments() { env.removeAllItems(); env.addItem(withTitle: "No environment"); env.addItems(withTitles: store.environments.map(\.name)); env.selectItem(at: store.selectedEnvironment + 1) }
-    @objc func environmentChanged() { commitFields(); store.selectedEnvironment = env.indexOfSelectedItem - 1; store.save() }
+    func refreshVariableContext() {
+        let environment = store.environments.indices.contains(store.selectedEnvironment) ? store.environments[store.selectedEnvironment] : nil
+        variableContext.update(id: environment.map(ObjectIdentifier.init), name: environment?.name, values: environment?.variables ?? [:])
+    }
+    func refreshEnvironments() { env.removeAllItems(); env.addItem(withTitle: "No environment"); env.addItems(withTitles: store.environments.map(\.name)); env.selectItem(at: store.selectedEnvironment + 1); refreshVariableContext() }
+    @objc func environmentChanged() { commitFields(); store.selectedEnvironment = env.indexOfSelectedItem - 1; refreshVariableContext(); store.save() }
     func refreshTabBar() {
         tabBar.subviews.forEach { $0.removeFromSuperview() }
         var x: CGFloat = 10; var selectedFrame = NSRect.zero

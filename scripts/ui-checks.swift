@@ -268,6 +268,7 @@ struct UIChecks {
         }
         precondition(reconstructed == fixtureText, "Every byte remains accessible across windows")
         let reader = controller.responseReader
+        controller.response.isHidden = false; controller.emptyResponse.isHidden = true; layout()
         reader.open(fixture, highlight: false)
         func waitFor(_ test: () -> Bool) {
             let deadline = Date(timeIntervalSinceNow: 8)
@@ -275,10 +276,32 @@ struct UIChecks {
             precondition(test(), "Response reader completes asynchronously")
         }
         waitFor { reader.window != nil }
+        let responseText = controller.response.text, responseLayout = responseText.layoutManager!
+        precondition(responseLayout.firstUnlaidCharacterIndex() == (responseText.string as NSString).length, "The bounded response is fully laid out before scrolling")
+        let initialHeight = responseText.frame.height
+        responseText.displayIfNeeded(); layout()
+        precondition(abs(responseText.frame.height - initialHeight) < 1, "Rendering does not extend the response's scroll height later")
         let initialEnd = reader.window!.end
-        controller.response.text.scrollRangeToVisible(NSRange(location: (controller.response.text.string as NSString).length - 100, length: 0))
+        func visibleByte() -> UInt64 {
+            let glyphs = responseLayout.glyphRange(forBoundingRect: controller.response.scroll.contentView.bounds.offsetBy(dx: -responseText.textContainerInset.width, dy: -responseText.textContainerInset.height), in: responseText.textContainer!)
+            let chars = responseLayout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            return reader.window!.start + UInt64((responseText.string as NSString).substring(to: chars.location).utf8.count)
+        }
+        // Simulate continued momentum before the pending disk window can apply.
+        let responseLength = (responseText.string as NSString).length
+        responseText.scrollRangeToVisible(NSRange(location: responseLength - 50_000, length: 0))
+        responseText.scrollRangeToVisible(NSRange(location: responseLength - 10_000, length: 0))
+        let liveByte = visibleByte()
         waitFor { reader.window!.end > initialEnd }
         precondition(reader.window!.start > 0, "Scrolling advances beyond the first bounded window")
+        precondition(visibleByte() == liveByte, "A window swap preserves the latest momentum position rather than its stale load-time position: \(liveByte) → \(visibleByte()), window \(reader.window!.start), bounds \(controller.response.scroll.contentView.bounds)")
+        let forwardStart = reader.window!.start
+        layout()
+        precondition(reader.window!.start == forwardStart, "The restored viewport does not bounce between disk windows")
+        responseText.scrollRangeToVisible(NSRange(location: 10_000, length: 0))
+        let reverseByte = visibleByte()
+        waitFor { reader.window!.start < forwardStart }
+        precondition(visibleByte() == reverseByte, "Reverse scrolling preserves the viewport through a window swap")
         controller.response.text.scrollToEndOfDocument(nil)
         waitFor { controller.response.text.string.hasSuffix("TAIL-MARKER") }
         precondition(controller.response.text.string.utf8.count <= ResponseReader.Window.capacity)

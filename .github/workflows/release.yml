@@ -40,11 +40,21 @@ jobs:
       - name: Check table and body editing
         run: ./scripts/test-editor.sh
 
+      - name: Check environment variable previews
+        run: ./scripts/test-variables.sh
+
       - name: Check release detection
         run: ./scripts/test-updates.sh
 
+      - name: Set up Python for fixture checks
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
       - name: Check cURL exports
-        run: ./scripts/test-curl.sh
+        run: |
+          python3 scripts/curl-startup-checks.py
+          ./scripts/test-curl.sh
 
       - name: Verify release bundle
         run: |

@@ -63,6 +63,8 @@ final class ResponseReader {
     private var loading = false
     private var applying = false
     private var highlight = false
+    private var lastVisibleByte: UInt64 = 0
+    private var scrollsForward = true
     var windowChanged: (() -> Void)?
     var isApplyingWindow: Bool { applying || loading }
     lazy var findClient = ResponseFindClient(editor: editor, reader: self)
@@ -72,7 +74,7 @@ final class ResponseReader {
         editor.viewportChanged = { [weak self] in self?.viewportChanged() }
         editor.text.jumpToBoundary = { [weak self] end in self?.jump(end: end) }
     }
-    private func resetWindow() { job.cancel(); generation = UUID(); file = nil; window = nil; loading = false; context = nil }
+    private func resetWindow() { job.cancel(); generation = UUID(); file = nil; window = nil; loading = false; context = nil; lastVisibleByte = 0; scrollsForward = true }
     func clear() { resetWindow(); findClient.open(nil) }
     func open(_ file: URL, highlight: Bool) {
         guard self.file != file else { return }
@@ -90,26 +92,34 @@ final class ResponseReader {
         guard file != nil else { return }
         load(start: end && size > UInt64(Window.capacity) ? size - UInt64(Window.capacity) : 0, end: end)
     }
-    private func viewportChanged() {
-        guard !loading, !applying, let window, let layout = editor.text.layoutManager, let container = editor.text.textContainer else { return }
+    private func visibleAnchor() -> (byte: UInt64, delta: CGFloat, characters: NSRange)? {
+        guard let window, let layout = editor.text.layoutManager, let container = editor.text.textContainer else { return nil }
         let bounds = editor.scroll.contentView.bounds
         let rect = bounds.offsetBy(dx: -editor.text.textContainerInset.width, dy: -editor.text.textContainerInset.height)
         let glyphs = layout.glyphRange(forBoundingRect: rect, in: container)
         let chars = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
         let length = (window.text as NSString).length
-        guard chars.location != NSNotFound, length > 0 else { return }
-        let nearEnd = NSMaxRange(chars) > length - min(8192, length / 8)
-        let nearStart = chars.location < min(8192, length / 8)
-        guard (nearEnd && window.end < size) || (nearStart && window.start > 0) else { return }
-        let index = min(chars.location, length)
+        guard chars.location != NSNotFound, length > 0 else { return nil }
+        let index = min(chars.location, max(0, length - 1))
         let anchor = window.start + UInt64((window.text as NSString).substring(to: index).utf8.count)
         let glyph = layout.glyphIndexForCharacter(at: index)
         let y = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: min(1, layout.numberOfGlyphs - glyph)), in: container).minY + editor.text.textContainerInset.height
-        let delta = bounds.minY - y
+        return (anchor, bounds.minY - y, chars)
+    }
+    private func viewportChanged() {
+        guard !loading, !applying, let window, let visible = visibleAnchor() else { return }
+        if visible.byte != lastVisibleByte { scrollsForward = visible.byte > lastVisibleByte }
+        lastVisibleByte = visible.byte
+        let length = (window.text as NSString).length
+        let margin = min(65_536, length / 4)
+        let nearEnd = NSMaxRange(visible.characters) > length - margin
+        let nearStart = visible.characters.location < margin
+        guard (scrollsForward && nearEnd && window.end < size) || (!scrollsForward && nearStart && window.start > 0) else { return }
+        let anchor = visible.byte
         let start: UInt64
-        if nearEnd { start = anchor > 64 * 1024 ? anchor - 64 * 1024 : 0 }
-        else { start = anchor > UInt64(Window.capacity - 64 * 1024) ? anchor - UInt64(Window.capacity - 64 * 1024) : 0 }
-        load(start: start, anchor: (anchor, delta))
+        if scrollsForward { start = anchor > 128 * 1024 ? anchor - 128 * 1024 : 0 }
+        else { start = anchor > UInt64(Window.capacity - 128 * 1024) ? anchor - UInt64(Window.capacity - 128 * 1024) : 0 }
+        load(start: start, anchor: (anchor, visible.delta))
     }
     private func load(start: UInt64, anchor: (UInt64, CGFloat)? = nil, match: (UInt64, Int)? = nil, end: Bool = false) {
         guard let file else { return }
@@ -123,11 +133,27 @@ final class ResponseReader {
             DispatchQueue.main.async {
                 guard let self, self.generation == id, self.file == file else { return }
                 self.loading = false; self.applying = true
-                defer { self.applying = false; self.windowChanged?() }
+                defer {
+                    self.applying = false
+                    self.lastVisibleByte = self.visibleAnchor()?.byte ?? 0
+                    self.windowChanged?()
+                    if anchor != nil, case .success = result { DispatchQueue.main.async { [weak self] in self?.viewportChanged() } }
+                }
                 switch result {
                 case .failure(let error): self.failed?(error.localizedDescription)
                 case .success(let loaded):
                     let (value, state) = loaded
+                    // Wheel/trackpad momentum may have advanced while disk/context
+                    // work ran. Preserve the current viewport, not the old request-time anchor.
+                    let liveAnchor = anchor == nil ? nil : self.visibleAnchor()
+                    let effectiveAnchor = liveAnchor.map { ($0.byte, $0.delta) } ?? anchor
+                    if let effectiveAnchor, !(value.start...value.end).contains(effectiveAnchor.0) { return }
+                    let previousSelection = self.editor.text.selectedRange()
+                    let previousText = self.window?.text as NSString?
+                    let previousStart = self.window?.start ?? 0
+                    let selectionBytes: (UInt64, UInt64)? = anchor != nil && previousSelection.length > 0 && NSMaxRange(previousSelection) <= (previousText?.length ?? 0) ? previousText.map {
+                        (previousStart + UInt64($0.substring(to: previousSelection.location).utf8.count), previousStart + UInt64($0.substring(to: NSMaxRange(previousSelection)).utf8.count))
+                    } : nil
                     self.window = value; self.editor.set(value.text, highlight: self.highlight, initiallyInString: state.string, initiallyEscaped: state.escaped)
                     let text = self.editor.text
                     func character(_ byte: UInt64) -> Int {
@@ -137,13 +163,17 @@ final class ResponseReader {
                     if let match {
                         let range = NSRange(location: character(match.0), length: match.1)
                         if NSMaxRange(range) <= (value.text as NSString).length { text.setSelectedRange(range); text.scrollRangeToVisible(range) }
-                    } else if let anchor, let layout = text.layoutManager, let container = text.textContainer {
+                    } else if let anchor = effectiveAnchor, let layout = text.layoutManager, let container = text.textContainer {
                         let index = character(anchor.0)
                         layout.ensureLayout(forCharacterRange: NSRange(location: 0, length: min(index + 1, (value.text as NSString).length)))
                         let glyph = layout.glyphIndexForCharacter(at: index)
                         let y = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: min(1, layout.numberOfGlyphs - glyph)), in: container).minY + text.textContainerInset.height
                         self.editor.scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, y + anchor.1)))
                         self.editor.scroll.reflectScrolledClipView(self.editor.scroll.contentView)
+                        if let selectionBytes, selectionBytes.0 >= value.start, selectionBytes.1 <= value.end {
+                            let start = character(selectionBytes.0), end = character(selectionBytes.1)
+                            text.setSelectedRange(NSRange(location: start, length: end - start))
+                        }
                     } else if end { text.scrollRangeToVisible(NSRange(location: (value.text as NSString).length, length: 0)) }
                 }
             }

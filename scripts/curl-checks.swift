@@ -3,7 +3,11 @@ import RelayCore
 
 @main struct CurlChecks {
     static func main() throws {
-        let base = "http://127.0.0.1:\(CommandLine.arguments[1])"
+        guard CommandLine.arguments.count == 2, let port = Int(CommandLine.arguments[1]), (1...65535).contains(port) else {
+            FileHandle.standardError.write(Data("Usage: curl-checks <loopback port 1...65535>\n".utf8))
+            exit(1)
+        }
+        let base = "http://127.0.0.1:\(port)"
         let fm = FileManager.default, root = URL(fileURLWithPath: "build/curl-check-files-\(UUID().uuidString)").standardizedFileURL
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: root) }

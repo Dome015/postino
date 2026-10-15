@@ -1,6 +1,18 @@
 import AppKit
 import RelayCore
 extension MainWindow {
+    func saveEnvironmentVariable(_ name: String, value: String, environmentID: ObjectIdentifier, completion: @escaping (Bool) -> Void) {
+        guard store.environments.indices.contains(store.selectedEnvironment),
+              ObjectIdentifier(store.environments[store.selectedEnvironment]) == environmentID else { completion(false); return }
+        if environmentWindow != nil { commitEnvironment() }
+        let environment = store.environments[store.selectedEnvironment]
+        if let row = environment.values.lastIndex(where: { $0.key == name }) {
+            environment.values[row].value = value; environment.values[row].enabled = true
+        } else { environment.values.append(Pair(name, value)) }
+        if environmentIndex == store.selectedEnvironment { environmentEditor?.rows = environment.values }
+        refreshVariableContext()
+        store.save(completion: { completion(true) })
+    }
     @objc func editEnvironments() {
         commitFields(); if let w = environmentWindow { w.makeKeyAndOrderFront(nil); return }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 480), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false); w.title = "Environments"; w.minSize = NSSize(width: 720, height: 360); w.isReleasedWhenClosed = false; environmentWindow = w; w.contentView = Surface(canvasColor)
@@ -11,7 +23,7 @@ extension MainWindow {
         let duplicate = button("Duplicate", target: self, action: #selector(duplicateEnvironment)); duplicate.identifier = .init("duplicateEnvironment")
         let export = button("Export…", symbol: "square.and.arrow.up", target: self, action: #selector(exportEnvironment)); let remove = button("Delete environment", symbol: "trash", target: self, action: #selector(deleteEnvironment))
         let field = InputField(); field.placeholderString = "Environment name"; field.setAccessibilityLabel("Environment name"); envName = field
-        let editor = PairEditor(configuration: .environment); environmentEditor = editor; editor.changed = { [weak self] rows in guard let self = self, self.store.environments.indices.contains(self.environmentIndex) else { return }; self.store.environments[self.environmentIndex].values = rows; self.store.save() }
+        let editor = PairEditor(configuration: .environment); editor.variableContext = variableContext; environmentEditor = editor; editor.changed = { [weak self] rows in guard let self = self, self.store.environments.indices.contains(self.environmentIndex) else { return }; self.store.environments[self.environmentIndex].values = rows; self.refreshVariableContext(); self.store.save() }
         let help = label("Reference enabled variables with {{variable_name}}.", size: 12, color: .secondaryLabelColor)
         let done = button("Done", target: self, action: #selector(closeEnvironmentEditor)); done.keyEquivalent = "\r"
         let layout = stack([padded(stack([title, spacer(), done]), x: 10, top: 8, bottom: 0), padded(stack([picker, add, duplicate, spacer(), export, remove]), x: 10, top: 8, bottom: 0), padded(stack([label("Environment name", size: 12), field]), x: 10, top: 8, bottom: 0), padded(help, x: 10, y: 8), editor], vertical: true, spacing: 0); layout.alignment = .width; pin(layout, in: w.contentView!); updateEnvironmentEditor(); w.center(); w.makeKeyAndOrderFront(nil)

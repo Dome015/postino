@@ -60,6 +60,7 @@ enum JSONSyntax {
 }
 
 final class EditorTextView: CodeEditingTextView {
+    var drawVariableHighlights: ((NSRect) -> Void)?
     var responseFinder: NSTextFinder?
     var drawFindHighlights: (() -> Void)?
     override func performFindPanelAction(_ sender: Any?) {
@@ -73,7 +74,7 @@ final class EditorTextView: CodeEditingTextView {
         if let finder = responseFinder, item.action == #selector(performFindPanelAction(_:)) || item.action == #selector(performTextFinderAction(_:)), let action = NSTextFinder.Action(rawValue: item.tag) { return finder.validateAction(action) }
         return super.validateUserInterfaceItem(item)
     }
-    override func drawBackground(in rect: NSRect) { super.drawBackground(in: rect); if !isDrawingFindIndicator { drawFindHighlights?() } }
+    override func drawBackground(in rect: NSRect) { super.drawBackground(in: rect); if !isDrawingFindIndicator { drawVariableHighlights?(rect); drawFindHighlights?() } }
     var jumpToBoundary: ((Bool) -> Void)?
     override func moveToEndOfDocument(_ sender: Any?) { if let jumpToBoundary { jumpToBoundary(true) } else { super.moveToEndOfDocument(sender) } }
     override func moveToBeginningOfDocument(_ sender: Any?) { if let jumpToBoundary { jumpToBoundary(false) } else { super.moveToBeginningOfDocument(sender) } }
@@ -94,8 +95,18 @@ final class CodeEditor: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     private var initialString = false, initialEscape = false
     private var painted = NSRange(location: 0, length: 0)
     private var viewportObserver: NSObjectProtocol?
+    private let stabilizesLayout: Bool
+    private(set) var variableHighlighter: VariableReferenceHighlighter?
+    var variableContext: VariablePreviewContext? {
+        didSet {
+            if variableHighlighter == nil, variableContext != nil { variableHighlighter = VariableReferenceHighlighter(textView: text) }
+            variableHighlighter?.context = variableContext
+            text.drawVariableHighlights = { [weak self] rect in self?.variableHighlighter?.draw(in: rect) }
+        }
+    }
 
     init(editable: Bool) {
+        stabilizesLayout = !editable
         super.init(frame: .zero)
         wantsLayer = true; layer?.cornerRadius = 8; layer?.masksToBounds = true
         text.isEditable = editable; text.isRichText = false; text.allowsUndo = editable; text.editingAidsEnabled = editable
@@ -103,7 +114,7 @@ final class CodeEditor: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         text.isAutomaticTextReplacementEnabled = false; text.isAutomaticLinkDetectionEnabled = false; text.isAutomaticDataDetectionEnabled = false; text.isAutomaticTextCompletionEnabled = false
         text.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular); text.textColor = .labelColor; text.backgroundColor = editorColor
         text.textContainerInset = NSSize(width: 10, height: 8); text.isVerticallyResizable = true; text.isHorizontallyResizable = false; text.autoresizingMask = [.width]
-        text.textContainer?.widthTracksTextView = true; text.layoutManager?.allowsNonContiguousLayout = true
+        text.textContainer?.widthTracksTextView = true; text.layoutManager?.allowsNonContiguousLayout = editable
         text.minSize = .zero; text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude); text.usesFindBar = true; text.isIncrementalSearchingEnabled = true; text.delegate = self; text.textStorage?.delegate = self
         text.setAccessibilityLabel(editable ? "Request body" : "Response body")
         scroll.backgroundColor = editorColor; scroll.drawsBackground = true; scroll.documentView = text; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
@@ -116,13 +127,22 @@ final class CodeEditor: NSView, NSTextViewDelegate, NSTextStorageDelegate {
     override func layout() {
         super.layout(); let size = scroll.contentSize
         text.minSize = NSSize(width: size.width, height: size.height); text.setFrameSize(NSSize(width: size.width, height: max(text.frame.height, size.height)))
+        stabilizeLayout()
         scheduleHighlight()
+    }
+    private func stabilizeLayout() {
+        guard stabilizesLayout, scroll.contentSize.width > 0, let manager = text.layoutManager, let container = text.textContainer else { return }
+        // Response text is bounded by ResponseReader.Window.capacity. Finish its
+        // layout before exposing a scroll extent that could otherwise grow mid-scroll.
+        manager.ensureLayout(for: container)
+        let height = ceil(manager.usedRect(for: container).maxY + text.textContainerInset.height * 2)
+        text.setFrameSize(NSSize(width: scroll.contentSize.width, height: max(scroll.contentSize.height, height)))
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); scheduleHighlight() }
     func set(_ string: String, highlight: Bool = false, initiallyInString: Bool = false, initiallyEscaped: Bool = false) {
         initialString = initiallyInString; initialEscape = initiallyEscaped
         applying = true; clearHighlight(); text.string = string; text.setSelectedRange(NSRange(location: 0, length: 0)); scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
-        syntaxHighlighting = highlight; applying = false; scheduleHighlight()
+        stabilizeLayout(); syntaxHighlighting = highlight; applying = false; scheduleHighlight()
     }
     func textViewDidChangeSelection(_ notification: Notification) { selectionChanged?() }
     func textDidChange(_ notification: Notification) {
@@ -150,6 +170,7 @@ final class CodeEditor: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         painted = NSRange(location: 0, length: 0)
     }
     private func scheduleHighlight() {
+        variableHighlighter?.refresh()
         pending?.cancel(); syntaxJob.cancel(); generation = UUID()
         guard syntaxHighlighting else { clearHighlight(); return }
         let task = DispatchWorkItem { [weak self] in self?.highlightViewport() }

@@ -126,6 +126,16 @@ final class PairEditor: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTe
     var selectionChanged: (() -> Void)?
     var canRemoveRow: Bool { items.indices.contains(table.selectedRow) }
     var secret = false
+    var variableContext: VariablePreviewContext? {
+        didSet {
+            func update(_ view: NSView) {
+                (view as? InputField)?.variableContext = variableContext
+                (view as? SecureInputField)?.variableContext = variableContext
+                view.subviews.forEach(update)
+            }
+            update(table)
+        }
+    }
     let table = PairTableView()
     private let scroll = PairScrollView()
     private let hasTypes: Bool
@@ -222,9 +232,14 @@ final class PairEditor: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTe
             b.contentTintColor = accent; b.controlSize = .small; b.state = p.enabled ? .on : .off
             b.tag = row; b.toolTip = "Include this \(configuration.rowName)"; b.setAccessibilityLabel("Enable \(configuration.rowName) \(row + 1)"); return cell(b)
         }
-        let text: NSTextField = secret && identifier == "value" && ["token", "password", "value"].contains(p.key) ? SecureInputField() : InputField()
+        let value = identifier == "key" ? p.key : (p.extra["type"] as? String == "file" ? (p.extra["src"] as? String ?? p.value) : p.value)
+        let references = VariableReference.matches(in: value)
+        let referenceOnly = references.count == 1 && references[0].range == NSRange(location: 0, length: (value as NSString).length)
+        let text: NSTextField = secret && identifier == "value" && ["token", "password", "value"].contains(p.key) && !referenceOnly ? SecureInputField() : InputField()
         text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        text.stringValue = identifier == "key" ? p.key : (p.extra["type"] as? String == "file" ? (p.extra["src"] as? String ?? p.value) : p.value)
+        text.stringValue = value
+        (text as? InputField)?.variableContext = variableContext
+        (text as? SecureInputField)?.variableContext = variableContext
         text.placeholderString = identifier == "key" ? keyPlaceholder : placeholder
         text.tag = row * 2 + (identifier == "key" ? 0 : 1); text.delegate = self
         text.setAccessibilityLabel("\(identifier) row \(row + 1)")

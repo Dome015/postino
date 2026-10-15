@@ -21,6 +21,11 @@ private enum InputStyle {
 }
 private final class InputCell: NSTextFieldCell {
     private var placingEditor = false
+    override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
+        let editor = super.setUpFieldEditorAttributes(textObj)
+        (editor as? NSTextView)?.textContainer?.lineFragmentPadding = 0
+        return editor
+    }
     override func drawingRect(forBounds rect: NSRect) -> NSRect { placingEditor ? rect : InputStyle.textRect(rect, font: font) }
     override func select(withFrame rect: NSRect, in view: NSView, editor: NSText, delegate: Any?, start: Int, length: Int) {
         let textRect = drawingRect(forBounds: rect); placingEditor = true; defer { placingEditor = false }
@@ -33,6 +38,11 @@ private final class InputCell: NSTextFieldCell {
 }
 private final class SecureInputCell: NSSecureTextFieldCell {
     private var placingEditor = false
+    override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
+        let editor = super.setUpFieldEditorAttributes(textObj)
+        (editor as? NSTextView)?.textContainer?.lineFragmentPadding = 0
+        return editor
+    }
     override func drawingRect(forBounds rect: NSRect) -> NSRect { placingEditor ? rect : InputStyle.textRect(rect, font: font) }
     override func select(withFrame rect: NSRect, in view: NSView, editor: NSText, delegate: Any?, start: Int, length: Int) {
         let textRect = drawingRect(forBounds: rect); placingEditor = true; defer { placingEditor = false }
@@ -63,6 +73,15 @@ private final class InputSearchCell: NSSearchFieldCell {
 }
 final class InputField: NSTextField {
     private var chrome: ControlChrome?
+    private(set) var variableHighlighter: VariableReferenceHighlighter?
+    var variableContext: VariablePreviewContext? {
+        didSet {
+            if variableHighlighter == nil, variableContext != nil { variableHighlighter = VariableReferenceHighlighter(field: self) }
+            variableHighlighter?.context = variableContext
+        }
+    }
+    override var stringValue: String { didSet { variableHighlighter?.refresh() } }
+    override func draw(_ dirtyRect: NSRect) { if variableHighlighter?.drawField(in: dirtyRect) != true { super.draw(dirtyRect) } }
     override init(frame: NSRect) { super.init(frame: frame); cell = InputCell(textCell: ""); InputStyle.configure(self); chrome = ControlChrome(self, fill: inputBackgroundColor) }
     required init?(coder: NSCoder) { fatalError() }
     override var allowsVibrancy: Bool { false }
@@ -73,11 +92,21 @@ final class InputField: NSTextField {
     override func becomeFirstResponder() -> Bool {
         let focused = super.becomeFirstResponder()
         (currentEditor() as? NSTextView)?.drawsBackground = false
+        variableHighlighter?.refresh()
         return focused
     }
 }
 final class SecureInputField: NSSecureTextField {
     private var chrome: ControlChrome?
+    private(set) var variableHighlighter: VariableReferenceHighlighter?
+    var variableContext: VariablePreviewContext? {
+        didSet {
+            if variableHighlighter == nil, variableContext != nil { variableHighlighter = VariableReferenceHighlighter(field: self) }
+            variableHighlighter?.context = variableContext
+        }
+    }
+    override var stringValue: String { didSet { variableHighlighter?.refresh() } }
+    override func draw(_ dirtyRect: NSRect) { variableHighlighter?.draw(in: dirtyRect); super.draw(dirtyRect) }
     override init(frame: NSRect) { super.init(frame: frame); cell = SecureInputCell(textCell: ""); InputStyle.configure(self); chrome = ControlChrome(self, fill: inputBackgroundColor) }
     required init?(coder: NSCoder) { fatalError() }
     override var allowsVibrancy: Bool { false }
@@ -88,6 +117,7 @@ final class SecureInputField: NSSecureTextField {
     override func becomeFirstResponder() -> Bool {
         let focused = super.becomeFirstResponder()
         (currentEditor() as? NSTextView)?.drawsBackground = false
+        variableHighlighter?.refresh()
         return focused
     }
 }
