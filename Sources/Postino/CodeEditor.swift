@@ -113,8 +113,14 @@ final class CodeEditor: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticDashSubstitutionEnabled = false; text.isAutomaticSpellingCorrectionEnabled = false; text.isContinuousSpellCheckingEnabled = false; text.isGrammarCheckingEnabled = false
         text.isAutomaticTextReplacementEnabled = false; text.isAutomaticLinkDetectionEnabled = false; text.isAutomaticDataDetectionEnabled = false; text.isAutomaticTextCompletionEnabled = false
         text.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular); text.textColor = .labelColor; text.backgroundColor = editorColor
-        text.textContainerInset = NSSize(width: 10, height: 8); text.isVerticallyResizable = true; text.isHorizontallyResizable = false; text.autoresizingMask = [.width]
+        text.textContainerInset = NSSize(width: 10, height: 8); text.isVerticallyResizable = editable; text.isHorizontallyResizable = false; text.autoresizingMask = [.width]
         text.textContainer?.widthTracksTextView = true; text.layoutManager?.allowsNonContiguousLayout = editable
+        if !editable {
+            // CodeEditor owns the bounded response height. Native auto-sizing
+            // during layout completion would resize and invalidate it again.
+            text.textContainer?.heightTracksTextView = false
+            text.textContainer?.containerSize.height = CGFloat.greatestFiniteMagnitude
+        }
         text.minSize = .zero; text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude); text.usesFindBar = true; text.isIncrementalSearchingEnabled = true; text.delegate = self; text.textStorage?.delegate = self
         text.setAccessibilityLabel(editable ? "Request body" : "Response body")
         scroll.backgroundColor = editorColor; scroll.drawsBackground = true; scroll.documentView = text; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
@@ -137,6 +143,9 @@ final class CodeEditor: NSView, NSTextViewDelegate, NSTextStorageDelegate {
         manager.ensureLayout(for: container)
         let height = ceil(manager.usedRect(for: container).maxY + text.textContainerInset.height * 2)
         text.setFrameSize(NSSize(width: scroll.contentSize.width, height: max(scroll.contentSize.height, height)))
+        // A frame change can invalidate a width-tracking container, even when
+        // only the height changes. Finish layout after the final geometry update.
+        manager.ensureLayout(forCharacterRange: NSRange(location: 0, length: text.textStorage?.length ?? 0))
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); scheduleHighlight() }
     func set(_ string: String, highlight: Bool = false, initiallyInString: Bool = false, initiallyEscaped: Bool = false) {

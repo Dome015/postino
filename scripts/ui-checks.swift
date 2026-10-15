@@ -267,6 +267,34 @@ struct UIChecks {
             reconstructed += value.text; cursor = value.end
         }
         precondition(reconstructed == fixtureText, "Every byte remains accessible across windows")
+        // Some AppKit versions invalidate width-tracking containers when the
+        // text view's frame changes, even for a height-only resize. Reproduce
+        // that invalidation synchronously rather than depending on the runner OS.
+        let layoutProbe = CodeEditor(editable: false)
+        layoutProbe.frame = NSRect(x: 0, y: 0, width: 420, height: 180)
+        // A windowless view does not automatically resolve its child constraints.
+        layoutProbe.scroll.frame = layoutProbe.bounds
+        layoutProbe.scroll.tile(); layoutProbe.layout()
+        precondition(layoutProbe.scroll.contentSize.width > 0, "The layout probe has a usable scroll viewport")
+        layoutProbe.set(try ResponseReader.Window.read(fixture, start: 0).text)
+        let probeManager = layoutProbe.text.layoutManager!
+        layoutProbe.text.postsFrameChangedNotifications = true
+        var resizeInvalidations = 0
+        let resizeObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: layoutProbe.text, queue: .main) { _ in
+            resizeInvalidations += 1
+            probeManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: (layoutProbe.text.string as NSString).length), actualCharacterRange: nil)
+        }
+        layoutProbe.text.setFrameSize(NSSize(width: layoutProbe.text.frame.width, height: 180))
+        // Replay the former order and prove that the final resize can undo the
+        // completed layout, then check the actual editor's corrected layout path.
+        probeManager.ensureLayout(for: layoutProbe.text.textContainer!)
+        let measuredHeight = ceil(probeManager.usedRect(for: layoutProbe.text.textContainer!).maxY + layoutProbe.text.textContainerInset.height * 2)
+        layoutProbe.text.setFrameSize(NSSize(width: layoutProbe.scroll.contentSize.width, height: max(180, measuredHeight)))
+        precondition(probeManager.firstUnlaidCharacterIndex() < (layoutProbe.text.string as NSString).length, "The former layout-before-resize order reproduces invalidation")
+        layoutProbe.layout()
+        NotificationCenter.default.removeObserver(resizeObserver)
+        precondition(resizeInvalidations > 0, "The response layout regression exercises frame-triggered invalidation")
+        precondition(probeManager.firstUnlaidCharacterIndex() == (layoutProbe.text.string as NSString).length, "Resizing must not leave the response layout invalidated: firstUnlaid=\(probeManager.firstUnlaidCharacterIndex()), length=\((layoutProbe.text.string as NSString).length), frame=\(layoutProbe.text.frame), viewport=\(layoutProbe.scroll.contentSize), container=\(layoutProbe.text.textContainer!.containerSize)")
         let reader = controller.responseReader
         controller.response.isHidden = false; controller.emptyResponse.isHidden = true; layout()
         reader.open(fixture, highlight: false)
@@ -277,7 +305,8 @@ struct UIChecks {
         }
         waitFor { reader.window != nil }
         let responseText = controller.response.text, responseLayout = responseText.layoutManager!
-        precondition(responseLayout.firstUnlaidCharacterIndex() == (responseText.string as NSString).length, "The bounded response is fully laid out before scrolling")
+        let firstUnlaid = responseLayout.firstUnlaidCharacterIndex()
+        precondition(firstUnlaid == (responseText.string as NSString).length, "The bounded response is fully laid out before scrolling: firstUnlaid=\(firstUnlaid), length=\((responseText.string as NSString).length), frame=\(responseText.frame), container=\(responseText.textContainer!.containerSize), heightTracksView=\(responseText.textContainer!.heightTracksTextView), OS=\(ProcessInfo.processInfo.operatingSystemVersionString)")
         let initialHeight = responseText.frame.height
         responseText.displayIfNeeded(); layout()
         precondition(abs(responseText.frame.height - initialHeight) < 1, "Rendering does not extend the response's scroll height later")
